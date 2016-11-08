@@ -14,12 +14,24 @@ num_channels = 1 # grayscale
 batch_size = 16
 patch_size = 5
 depth = 16
-num_hidden = 64
-num_steps = 5001
+num_steps = 20001
 
-start_lr = 0.25
+start_lr = 0.05
 decay_learning_rate = True
 
+#dropout seems to be making it impossible to learn
+#maybe only works for large nets
+dropout_rate = 0.25
+use_dropout = True
+
+early_stopping = True
+
+#seems having SQRT(2/n_in) as the stddev gives better weight initialization
+#I used constant of 0.1 and tried weight_init_factor=0.01 but non of them worked
+#lowering this makes the CNN impossible to learn
+weight_init_factor = 1
+
+beta = 1e-10
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 conv_ops = ['conv_1','pool_1','conv_2','pool_1','conv_3','pool_1','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
 
@@ -29,9 +41,9 @@ conv_1_hyparams = {'weights':[3,3,num_channels,depth],'stride':[1,1,1,1],'paddin
 conv_2_hyparams = {'weights':[3,3,depth,depth],'stride':[1,1,1,1],'padding':'SAME'}
 conv_3_hyparams = {'weights':[3,3,depth,depth],'stride':[1,1,1,1],'padding':'SAME'}
 pool_1_hyparams = {'type':'max','kernel':[1,2,2,1],'stride':[1,2,2,1],'padding':'SAME'}
-hidden_1_hyparams = {'in':0,'out':512}
-hidden_2_hyparams = {'in':512,'out':256}
-out_hyparams = {'in':256,'out':10}
+hidden_1_hyparams = {'in':0,'out':1024}
+hidden_2_hyparams = {'in':1024,'out':512}
+out_hyparams = {'in':512,'out':10}
 
 hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3': conv_3_hyparams,
             'pool_1': pool_1_hyparams, 'fulcon_hidden_1':hidden_1_hyparams,
@@ -43,7 +55,6 @@ test_dataset, test_labels = None,None
 
 tf_dataset = None
 tf_labels = None
-
 
 weights,biases = {},{}
 
@@ -102,8 +113,12 @@ def create_subsample_layers():
             print('\tDefining weights and biases for %s (weights:%s)'%(op,hyparams[op]['weights']))
             print('\t\tWeights:%s'%hyparams[op]['weights'])
             print('\t\tBias:%d'%hyparams[op]['weights'][3])
-            weights[op]=tf.Variable(tf.truncated_normal(hyparams[op]['weights'],stddev=0.1))
-            biases[op] = tf.Variable(tf.zeros([hyparams[op]['weights'][3]]))
+            weights[op]=tf.Variable(
+                tf.truncated_normal(hyparams[op]['weights'],
+                                    stddev=2./(hyparams[op]['weights'][0]*hyparams[op]['weights'][0])
+                                    )
+            )
+            biases[op] = tf.Variable(tf.constant(1.,shape=[hyparams[op]['weights'][3]]))
 
 def create_fulcon_layers(fan_in):
     hyparams['fulcon_hidden_1']['in'] = fan_in
@@ -114,8 +129,13 @@ def create_fulcon_layers(fan_in):
                 if op in weights and op in biases:
                     break
 
-                weights[op] = tf.Variable(tf.truncated_normal([hyparams[op]['in'],hyparams[op]['out']],stddev=0.1))
-                biases[op] = tf.Variable(tf.constant(0.25,shape=[hyparams[op]['out']]))
+                weights[op] = tf.Variable(
+                    tf.truncated_normal(
+                        [hyparams[op]['in'],hyparams[op]['out']],stddev=2./hyparams[op]['in']
+                    )
+                )
+
+                biases[op] = tf.Variable(tf.zeros(shape=[hyparams[op]['out']]))
 
 
 def get_logits(dataset):
@@ -127,6 +147,7 @@ def get_logits(dataset):
         if 'conv' in op:
             print('\tCovolving data (%s)'%op)
             x = tf.nn.conv2d(x, weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding'])
+
             x = tf.nn.relu(x + biases[op])
             print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
         if 'pool' in op:
@@ -149,22 +170,23 @@ def get_logits(dataset):
         if 'fulcon_hidden' not in op:
             continue
         else:
-            x = tf.nn.relu(tf.matmul(x,weights[op])+biases[op])
+            if use_dropout:
+                x = tf.nn.dropout(tf.nn.relu(tf.matmul(x,weights[op])+biases[op]),keep_prob=1.-dropout_rate,seed=tf.set_random_seed(12321))
+            else:
+                x = tf.nn.relu(tf.matmul(x,weights[op])+biases[op])
 
     return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out']
 
 def calc_loss(logits,labels):
     # Training computation.
-
-    loss = tf.reduce_mean(
-    tf.nn.softmax_cross_entropy_with_logits(logits, labels))
+    loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels)) + (beta/2)*tf.reduce_sum([tf.nn.l2_loss(w) if 'fulcon' in kw else 0 for kw,w in weights.items()])
 
     return loss
 
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=100,decay_rate=0.95)
+        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=500,decay_rate=0.99)
     else:
         learning_rate = start_lr
 
@@ -188,6 +210,8 @@ if __name__=='__main__':
     load_data()
     reshape_data()
     graph = tf.Graph()
+
+    valid_accuracies = []
 
     with tf.Session(graph=graph) as session:
         #tf.global_variables_initializer().run()
@@ -214,22 +238,34 @@ if __name__=='__main__':
         test_pred = predict_with_dataset(tf_test_dataset)
 
         tf.initialize_all_variables().run()
-        print('Initialized')
-
+        print('Initialized...')
+        print('Batch size:',batch_size)
+        print('Depth:',depth)
+        print('Num Steps: ',num_steps)
+        print('Decay Learning Rate: ',decay_learning_rate,', ',start_lr)
+        print('Dropout: ',use_dropout,', ',dropout_rate)
+        print('Early Stopping: ',early_stopping)
+        print('Beta: ',beta)
+        print('==================================================\n')
         for step in range(num_steps):
             offset = (step * batch_size) % (train_labels.shape[0] - batch_size)
             batch_data = train_dataset[offset:(offset + batch_size), :, :, :]
             batch_labels = train_labels[offset:(offset + batch_size), :]
 
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-            _, l, _, predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
+            _, l, _,predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
 
             if step % 50 == 0:
                 print('Global step: %d'%global_step.eval())
                 print('Minibatch loss at step %d: %f' % (step, l))
                 print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
                 valid_predictions = session.run([valid_pred])
-                print('Validation accuracy: %.1f%%' % accuracy(valid_predictions[0], valid_labels))
+                v_accuracy = accuracy(valid_predictions[0], valid_labels)
+                print('Validation accuracy: %.1f%%' %v_accuracy)
+                if early_stopping and step>500 \
+                        and len(valid_accuracies)>0 and v_accuracy < np.mean(valid_accuracies[-10:])*0.9:
+                    break
+                valid_accuracies.append(v_accuracy)
 
         test_predictions = session.run([test_pred])
         print('Test accuracy: %.1f%%' % accuracy(test_predictions[0], test_labels))
