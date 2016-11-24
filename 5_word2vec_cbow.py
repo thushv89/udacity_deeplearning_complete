@@ -2,7 +2,6 @@ __author__ = 'Thushan Ganegedara'
 
 # These are all the modules we'll be using later. Make sure you can import them
 # before proceeding further.
-
 #from __future__ import print_function
 import collections
 import math
@@ -11,7 +10,6 @@ import os
 import random
 import tensorflow as tf
 import zipfile
-
 from six.moves import range
 from six.moves.urllib.request import urlretrieve
 from sklearn.manifold import TSNE
@@ -76,18 +74,20 @@ del words  # Hint to reduce memory.
 
 data_index = 0
 
-def generate_batch(batch_size, num_skips, skip_window):
+def generate_batch(batch_size, skip_window):
     # skip window is the amount of words we're looking at from each side of a given word
     # creates a single batch
     global data_index
-    assert batch_size % num_skips == 0
-    assert num_skips <= 2 * skip_window
-    batch = np.ndarray(shape=(batch_size), dtype=np.int32)
+    assert skip_window%2==1
+
+    span = 2 * skip_window + 1 # [ skip_window target skip_window ]
+
+    batch = np.ndarray(shape=(batch_size,span-1), dtype=np.int32)
     labels = np.ndarray(shape=(batch_size, 1), dtype=np.int32)
     # e.g if skip_window = 2 then span = 5
     # span is the length of the whole frame we are considering for a single word (left + word + right)
     # skip_window is the length of one side
-    span = 2 * skip_window + 1 # [ skip_window target skip_window ]
+
     # queue which add and pop at the end
     buffer = collections.deque(maxlen=span)
 
@@ -99,34 +99,38 @@ def generate_batch(batch_size, num_skips, skip_window):
     # num_skips => # of times we select a random word within the span?
     # batch_size (8) and num_skips (2) (4 times)
     # batch_size (8) and num_skips (1) (8 times)
-    for i in range(batch_size // num_skips):
+    for i in range(batch_size):
         target = skip_window  # target label at the center of the buffer
-        targets_to_avoid = [ skip_window ] # we only need to know the words around a given word, not the word itself
+        target_to_avoid = [ skip_window ] # we only need to know the words around a given word, not the word itself
 
         # do this num_skips (2 times)
         # do this (1 time)
-        for j in range(num_skips):
-            while target in targets_to_avoid:
-                # find a target word that is not the word itself
-                # while loop will keep repeating until the algorithm find a suitable target word
-                target = random.randint(0, span - 1)
-            # add selected target to avoid_list for next time
-            targets_to_avoid.append(target)
+
+        # add selected target to avoid_list for next time
+        col_idx = 0
+        for j in range(span):
+            if j==span//2:
+                continue
             # e.g. i=0, j=0 => 0; i=0,j=1 => 1; i=1,j=0 => 2
-            batch[i * num_skips + j] = buffer[skip_window] # [skip_window] => middle element
-            labels[i * num_skips + j, 0] = buffer[target]
+            batch[i,col_idx] = buffer[j] # [skip_window] => middle element
+            col_idx += 1
+        labels[i, 0] = buffer[target]
+
         buffer.append(data[data_index])
         data_index = (data_index + 1) % len(data)
+
+    assert batch.shape[0]==batch_size and batch.shape[1]== span-1
     return batch, labels
 
-print('data:', [reverse_dictionary[di] for di in data[:8]])
+
+'''print('data:', [reverse_dictionary[di] for di in data[:8]])
 
 for num_skips, skip_window in [(2, 1), (4, 2)]:
     data_index = 0
-    batch, labels = generate_batch(batch_size=8, num_skips=num_skips, skip_window=skip_window)
+    batch, labels = generate_batch(batch_size=8, skip_window=skip_window)
     print('\nwith num_skips = %d and skip_window = %d:' % (num_skips, skip_window))
     print('    batch:', [reverse_dictionary[bi] for bi in batch])
-    print('    labels:', [reverse_dictionary[li] for li in labels.reshape(8)])
+    print('    labels:', [reverse_dictionary[li] for li in labels.reshape(8)])'''
 
 
 num_steps = 100001
@@ -151,7 +155,7 @@ if __name__ == '__main__':
     with graph.as_default(), tf.device('/cpu:0'):
 
         # Input data.
-        train_dataset = tf.placeholder(tf.int32, shape=[batch_size])
+        train_dataset = tf.placeholder(tf.int32, shape=[batch_size,2*skip_window])
         train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
         valid_dataset = tf.constant(valid_examples, dtype=tf.int32)
 
@@ -166,12 +170,31 @@ if __name__ == '__main__':
         # Look up embeddings for inputs.
         # this might efficiently find the embeddings for given ids (traind dataset)
         # manually doing this might not be efficient given there are 50000 entries in embeddings
-        embed = tf.nn.embedding_lookup(embeddings, train_dataset)
-        print("Embed size: %s"%embed.get_shape().as_list())
+        embeds = None
+        for i in range(2*skip_window):
+            embedding_i = tf.nn.embedding_lookup(embeddings, train_dataset[:,i])
+            print('embedding %d shape: %s'%(i,embedding_i.get_shape().as_list()))
+            emb_x,emb_y = embedding_i.get_shape().as_list()
+            if embeds is None:
+                embeds = tf.reshape(embedding_i,[emb_x,emb_y,1])
+            else:
+                embeds = tf.concat(2,[embeds,tf.reshape(embedding_i,[emb_x,emb_y,1])])
+
+        assert embeds.get_shape().as_list()[2]==2*skip_window
+        print("Concat embedding size: %s"%embeds.get_shape().as_list())
+        avg_embed =  tf.reduce_mean(embeds,2,keep_dims=False)
+        print("Avg embedding size: %s"%avg_embed.get_shape().as_list())
+
+        '''embedding_0 = tf.nn.embedding_lookup(embeddings, train_dataset[:,0])
+        embedding_1 = tf.nn.embedding_lookup(embeddings, train_dataset[:,1])
+        avg_embed =  (embedding_0+embedding_1)/2.0
+        print("Avg embedding size: %s"%avg_embed.get_shape().as_list())'''
+
         # Compute the softmax loss, using a sample of the negative labels each time.
         # inputs are embeddings of the train words
         # with this loss we optimize weights, biases, embeddings
-        loss = tf.reduce_mean(tf.nn.sampled_softmax_loss(softmax_weights, softmax_biases, embed,
+
+        loss = tf.reduce_mean(tf.nn.sampled_softmax_loss(softmax_weights, softmax_biases, avg_embed,
                                train_labels, num_sampled, vocabulary_size))
 
         # Optimizer.
@@ -195,7 +218,7 @@ if __name__ == '__main__':
         print('Initialized')
         average_loss = 0
         for step in range(num_steps):
-            batch_data, batch_labels = generate_batch(batch_size, num_skips, skip_window)
+            batch_data, batch_labels = generate_batch(batch_size, skip_window)
             feed_dict = {train_dataset : batch_data, train_labels : batch_labels}
             _, l = session.run([optimizer, loss], feed_dict=feed_dict)
             average_loss += l

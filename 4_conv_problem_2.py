@@ -27,6 +27,8 @@ Inception CNN
 'conv_1','pool_1','conv_2','pool_1','incept_1','pool_2','fulcon_hidden_1','fulcon_out'
 =========================================================================='''
 
+# having very less variation for weight initialization can also fail
+#
 datatype = 'cifar-10'
 if datatype=='cifar-10':
     image_size = 32
@@ -38,9 +40,9 @@ elif datatype=='notMNIST':
     num_channels = 1 # grayscale
 
 batch_size = 16
-patch_size = 3
+patch_size = 5
 
-num_steps = 50001
+num_steps = 100001
 
 start_lr = 0.1
 decay_learning_rate = True
@@ -59,25 +61,27 @@ accuracy_drops_cap = 10
 weight_init_factor = 1
 
 include_l2_loss = True
-beta = 1e-10
+beta = 0.002
 
 #making bias small seems to be helpful (pref 0)
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
-conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
+conv_ops = ['conv_1','pool_2','conv_2','pool_2','conv_3','pool_1','conv_4','pool_1','conv_5','pool_3','fulcon_hidden_1','fulcon_out']
 
 #number of feature maps for each convolution layer
-depth_conv = {'conv_1':128,'conv_2':64,'conv_3':32,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
+depth_conv = {'conv_1':64,'conv_2':64,'conv_3':48,'conv_4':48,'conv_5':48,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
 incept_orders = {'incept_1':['ipool_2x2','iconv_1x1','iconv_3x3','iconv_5x5']}
 
 #weights (conv): [width,height,in_depth,out_depth]
 #kernel (pool): [_,width,height,_]
-conv_1_hyparams = {'weights':[patch_size,patch_size,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
-conv_2_hyparams = {'weights':[patch_size,patch_size,depth_conv['conv_1'],depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
-conv_3_hyparams = {'weights':[patch_size,patch_size,depth_conv['conv_2'],depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_1_hyparams = {'weights':[3,3,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_2_hyparams = {'weights':[3,3,depth_conv['conv_1'],depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_3_hyparams = {'weights':[5,5,depth_conv['conv_2'],depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_4_hyparams = {'weights':[5,5,depth_conv['conv_3'],depth_conv['conv_4']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_5_hyparams = {'weights':[5,5,depth_conv['conv_4'],depth_conv['conv_5']],'stride':[1,1,1,1],'padding':'SAME'}
 pool_1_hyparams = {'type':'max','kernel':[1,2,2,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_2_hyparams = {'type':'max','kernel':[1,2,2,1],'stride':[1,1,1,1],'padding':'SAME'}
-pool_3_hyparams = {'type':'avg','kernel':[1,5,5,1],'stride':[1,2,2,1],'padding':'SAME'}
+pool_3_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,1,1,1],'padding':'SAME'}
 #I'm using only one inception module. Hyperparameters for the inception module found here
 incept_1_hyparams = {
     'ipool_2x2':{'type':'avg','kernel':[1,5,5,1],'stride':[1,1,1,1],'padding':'SAME'},
@@ -89,9 +93,9 @@ incept_1_hyparams = {
 # fully connected layer hyperparameters
 hidden_1_hyparams = {'in':0,'out':1024}
 hidden_2_hyparams = {'in':1024,'out':512}
-out_hyparams = {'in':512,'out':10}
+out_hyparams = {'in':1024,'out':10}
 
-hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,
+hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,'conv_4':conv_4_hyparams,'conv_5':conv_5_hyparams,
            'incept_1': incept_1_hyparams,'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_3':pool_3_hyparams,
            'fulcon_hidden_1':hidden_1_hyparams,'fulcon_hidden_2': hidden_2_hyparams, 'fulcon_out':out_hyparams}
 #=====================================================================================================================#
@@ -294,7 +298,7 @@ def create_subsample_layers():
                                                        inc_hyparams[k]['weights'][2])
                                             )
                     )
-                    biases[w_key] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[inc_hyparams[k]['weights'][3]]))
+                    biases[w_key] = tf.Variable(tf.constant(np.random.random()*0.001,shape=[inc_hyparams[k]['weights'][3]]))
 
 def create_fulcon_layers(fan_in):
     hyparams['fulcon_hidden_1']['in'] = fan_in
@@ -311,7 +315,7 @@ def create_fulcon_layers(fan_in):
                     )
                 )
 
-                biases[op] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[hyparams[op]['out']]))
+                biases[op] = tf.Variable(tf.constant(np.random.random()*0.001,shape=[hyparams[op]['out']]))
 
 
 def get_logits(dataset):
@@ -438,7 +442,7 @@ def calc_loss(logits,labels):
     # Training computation.
     if include_l2_loss:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels)) + \
-               (beta/2)*tf.reduce_sum([tf.nn.l2_loss(w) if 'fulcon' in kw or 'cov' in kw else 0 for kw,w in weights.items()])
+               (beta/2)*tf.reduce_sum([tf.nn.l2_loss(w) if 'fulcon' in kw or 'conv' in kw else 0 for kw,w in weights.items()])
     else:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels))
 
@@ -447,7 +451,7 @@ def calc_loss(logits,labels):
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=500,decay_rate=0.99)
+        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1000,decay_rate=0.99)
     else:
         learning_rate = start_lr
 
