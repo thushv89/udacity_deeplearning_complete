@@ -45,6 +45,8 @@ print(valid_size, valid_text[:64])
 vocabulary_size = len(string.ascii_lowercase) + 1 # [a-z] + ' '
 first_letter = ord(string.ascii_lowercase[0])
 
+# map character to an id
+# e.g. ' '=>0, a=> 1, b=>2, ..., z=>26
 def char2id(char):
   if char in string.ascii_lowercase:
     return ord(char) - first_letter + 1
@@ -65,7 +67,7 @@ print(id2char(1), id2char(26), id2char(0))
 
 
 batch_size=64
-num_unrollings=10
+num_unrollings=10 # new number of batches to add to training data
 
 class BatchGenerator(object):
   def __init__(self, text, batch_size, num_unrollings):
@@ -152,6 +154,7 @@ graph = tf.Graph()
 with graph.as_default():
 
   # Parameters:
+  # x=>input, m=>model(output), b=>bias
   # Input gate: input, previous output, and bias.
   ix = tf.Variable(tf.truncated_normal([vocabulary_size, num_nodes], -0.1, 0.1))
   im = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
@@ -186,6 +189,18 @@ with graph.as_default():
     state = forget_gate * state + input_gate * tf.tanh(update)
     output_gate = tf.sigmoid(tf.matmul(i, ox) + tf.matmul(o, om) + ob)
     return output_gate * tf.tanh(state), state
+
+  def lstm_cell_prob1(i,o,state):
+      ifco_x = tf.concat(1,[ix,fx,cx,ox])
+      ifco_o = tf.concat(1,[im,fm,cm,om])
+      ifco_bias = tf.concat(1,[ib,fb,cb,ob])
+      ifco_wx_plus_b = tf.matmul(i,ifco_x) + tf.matmul(o,ifco_o) + ifco_bias
+      input_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b,[0,0],[batch_size,num_nodes]))
+      forget_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b,[0,num_nodes],[batch_size,2*num_nodes]))
+      update = tf.slice(ifco_wx_plus_b,[0,2*num_nodes],[batch_size,3*num_nodes])
+      state = forget_gate * state + input_gate * tf.tanh(update)
+      output_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b,[0,3*num_nodes],[batch_size,4*num_nodes]))
+      return output_gate * tf.tanh(state), state
 
   # Input data.
   train_data = list()
@@ -241,48 +256,47 @@ with graph.as_default():
 
 num_steps = 7001
 summary_frequency = 100
+skip_window = 2
 
 with tf.Session(graph=graph) as session:
-  tf.global_variables_initializer().run()
-  print('Initialized')
-  mean_loss = 0
-  for step in range(num_steps):
-    batches = train_batches.next()
-    feed_dict = dict()
-    for i in range(num_unrollings + 1):
-      feed_dict[train_data[i]] = batches[i]
-    _, l, predictions, lr = session.run(
-      [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
-    mean_loss += l
-    if step % summary_frequency == 0:
-      if step > 0:
-        mean_loss = mean_loss / summary_frequency
-      # The mean loss is an estimate of the loss over the last few batches.
-      print(
-        'Average loss at step %d: %f learning rate: %f' % (step, mean_loss, lr))
-      mean_loss = 0
-      labels = np.concatenate(list(batches)[1:])
-      print('Minibatch perplexity: %.2f' % float(
-        np.exp(logprob(predictions, labels))))
-      if step % (summary_frequency * 10) == 0:
-        # Generate some samples.
-        print('=' * 80)
-        for _ in range(5):
-          feed = sample(random_distribution())
-          sentence = characters(feed)[0]
-          reset_sample_state.run()
-          for _ in range(79):
-            prediction = sample_prediction.eval({sample_input: feed})
-            feed = sample(prediction)
-            sentence += characters(feed)[0]
-          print(sentence)
-        print('=' * 80)
-      # Measure validation set perplexity.
-      reset_sample_state.run()
-      valid_logprob = 0
-      for _ in range(valid_size):
-        b = valid_batches.next()
-        predictions = sample_prediction.eval({sample_input: b[0]})
-        valid_logprob = valid_logprob + logprob(predictions, b[1])
-      print('Validation set perplexity: %.2f' % float(np.exp(
-        valid_logprob / valid_size)))
+    tf.initialize_all_variables().run()
+    print('Initialized')
+    mean_loss = 0
+    for step in range(num_steps):
+        batches = train_batches.next()
+        feed_dict = dict()
+        for i in range(num_unrollings + 1):
+            feed_dict[train_data[i]] = batches[i]
+        _, l, predictions, lr = session.run(
+          [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
+        mean_loss += l
+        if step % summary_frequency == 0:
+            if step > 0:
+                mean_loss = mean_loss / summary_frequency
+            # The mean loss is an estimate of the loss over the last few batches.
+            print(
+            'Average loss at step %d: %f learning rate: %f' % (step, mean_loss, lr))
+            mean_loss = 0
+            labels = np.concatenate(list(batches)[1:])
+            print('Minibatch perplexity: %.2f' % float(np.exp(logprob(predictions, labels))))
+            if step % (summary_frequency * 10) == 0:
+                # Generate some samples.
+                print('=' * 80)
+                for _ in range(5):
+                    feed = sample(random_distribution())
+                    sentence = characters(feed)[0]
+                    reset_sample_state.run()
+                    for _ in range(79):
+                        prediction = sample_prediction.eval({sample_input: feed})
+                        feed = sample(prediction)
+                        sentence += characters(feed)[0]
+                print(sentence)
+            print('=' * 80)
+        # Measure validation set perplexity.
+        reset_sample_state.run()
+        valid_logprob = 0
+        for _ in range(valid_size):
+            b = valid_batches.next()
+            predictions = sample_prediction.eval({sample_input: b[0]})
+            valid_logprob = valid_logprob + logprob(predictions, b[1])
+        print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
