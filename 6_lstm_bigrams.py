@@ -89,6 +89,8 @@ def build_dataset(bigrams):
     reverse_dictionary = dict(zip(dictionary.values(), dictionary.keys()))
     return data, count, dictionary, reverse_dictionary
 
+# dictionary => 'ab' => 1234
+# reverse_dictionary  => 1234 => 'ab'
 data, count, dictionary, reverse_dictionary = build_dataset(bigrams)
 
 data_index = 0
@@ -169,8 +171,9 @@ class BatchGenerator(object):
     """Generate a single batch from the current cursor position in the data."""
     batch = np.zeros(shape=(self._batch_size, vocabulary_size), dtype=np.float)
     for b in range(self._batch_size):
-      batch[b, dictionary(self._text[self._cursor[b]])] = 1.0
-      self._cursor[b] = (self._cursor[b] + 1) % self._text_size
+        key = self._text[self._cursor[b]] + self._text[self._cursor[b]+1]
+        batch[b, dictionary[key]] = 1.0
+        self._cursor[b] = (self._cursor[b] + 1) % self._text_size
     return batch
 
   def next(self):
@@ -186,7 +189,8 @@ class BatchGenerator(object):
 def characters(probabilities):
   """Turn a 1-hot encoding or a probability distribution over the possible
   characters back into its (most likely) character representation."""
-  return [id2char(c) for c in np.argmax(probabilities, 1)]
+  # need embedding look up
+  return [reverse_dictionary[c] for c in np.argmax(probabilities, 1)]
 
 def batches2string(batches):
   """Convert a sequence of batches back into their (most likely) string
@@ -223,14 +227,15 @@ def sample_distribution(distribution):
   return len(distribution) - 1
 
 def sample(prediction):
-  """Turn a (column) prediction into 1-hot encoded samples."""
-  p = np.zeros(shape=[1, vocabulary_size], dtype=np.float)
+  """ Turn a (column) prediction into 1-hot encoded samples. """
+  p = np.zeros(shape=[1, embedding_size], dtype=np.float)
+  # prediction[0] is the 1st row of prediction
   p[0, sample_distribution(prediction[0])] = 1.0
   return p
 
 def random_distribution():
-  """Generate a random column of probabilities."""
-  b = np.random.uniform(0.0, 1.0, size=[1, vocabulary_size])
+  """Generate a random column of probabilities for embeddings."""
+  b = np.random.uniform(0.0, 1.0, size=[1, embedding_size])
   return b/np.sum(b, 1)[:,None]
 
 num_nodes = 64
@@ -277,6 +282,9 @@ with graph.as_default():
                            emb_train_labels, num_sampled, vocabulary_size))
     emb_optimizer = tf.train.AdagradOptimizer(1.0).minimize(emb_loss)
 
+    emb_norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
+    emb_normalized_embeddings = embeddings / emb_norm
+
     #norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
     #normalized_embeddings = embeddings / norm
     #valid_embeddings = tf.nn.embedding_lookup(normalized_embeddings, valid_dataset)
@@ -285,27 +293,27 @@ with graph.as_default():
     # Parameters:
     # x=>input, m=>model(output), b=>bias
     # Input gate: input, previous output, and bias.
-    ix = tf.Variable(tf.truncated_normal([vocabulary_size, num_nodes], -0.1, 0.1))
+    ix = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
     im = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
     ib = tf.Variable(tf.zeros([1, num_nodes]))
     # Forget gate: input, previous output, and bias.
-    fx = tf.Variable(tf.truncated_normal([vocabulary_size, num_nodes], -0.1, 0.1))
+    fx = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
     fm = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
     fb = tf.Variable(tf.zeros([1, num_nodes]))
     # Memory cell: input, state and bias.
-    cx = tf.Variable(tf.truncated_normal([vocabulary_size, num_nodes], -0.1, 0.1))
+    cx = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
     cm = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
     cb = tf.Variable(tf.zeros([1, num_nodes]))
     # Output gate: input, previous output, and bias.
-    ox = tf.Variable(tf.truncated_normal([vocabulary_size, num_nodes], -0.1, 0.1))
+    ox = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
     om = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
     ob = tf.Variable(tf.zeros([1, num_nodes]))
     # Variables saving state across unrollings.
     saved_output = tf.Variable(tf.zeros([batch_size, num_nodes]), trainable=False)
     saved_state = tf.Variable(tf.zeros([batch_size, num_nodes]), trainable=False)
     # Classifier weights and biases.
-    w = tf.Variable(tf.truncated_normal([num_nodes, vocabulary_size], -0.1, 0.1))
-    b = tf.Variable(tf.zeros([vocabulary_size]))
+    w = tf.Variable(tf.truncated_normal([num_nodes, embedding_size], -0.1, 0.1))
+    b = tf.Variable(tf.zeros([embedding_size]))
 
     # Definition of the cell computation.
     def lstm_cell(i, o, state):
@@ -335,7 +343,7 @@ with graph.as_default():
     train_data = list()
     for _ in range(num_unrollings + 1):
         train_data.append(
-            tf.placeholder(tf.float32, shape=[batch_size,vocabulary_size]))
+            tf.placeholder(tf.float32, shape=[batch_size,embedding_size]))
     train_inputs = train_data[:num_unrollings]
     train_labels = train_data[1:]  # labels are inputs shifted by one time step.
 
@@ -370,7 +378,7 @@ with graph.as_default():
     train_prediction = tf.nn.softmax(logits)
 
     # Sampling and validation eval: batch 1, no unrolling.
-    sample_input = tf.placeholder(tf.float32, shape=[1, vocabulary_size])
+    sample_input = tf.placeholder(tf.float32, shape=[1, embedding_size])
     saved_sample_output = tf.Variable(tf.zeros([1, num_nodes]))
     saved_sample_state = tf.Variable(tf.zeros([1, num_nodes]))
     reset_sample_state = tf.group(
@@ -426,15 +434,31 @@ with tf.Session(graph=graph) as session:
         if step % (summary_frequency * 10) == 0:
             # Generate some samples.
             print('=' * 80)
+            # creating 5 sentences
             for _ in range(5):
-                feed = sample(random_distribution())
-                sentence = characters(feed)[0]
+                sentence = ''
+                # feed is a probability vector of size embedding vector
+                feed = random_distribution()
+
+                # sentence is for pure interpretation purpose
+                # so we'll collect the embeddings and convert them to bigrams together
+                bi_embeddings = np.asarray(feed)
+                # reset LSTM sample state and output to zero
                 reset_sample_state.run()
+                # 79 elements in a sentence
                 for _ in range(79):
                     prediction = sample_prediction.eval({sample_input: feed})
-                    feed = sample(prediction)
-                    sentence += characters(feed)[0]
+                    feed = np.asarray(prediction)
+                    bi_embeddings = np.append(bi_embeddings,feed,axis=0)
+
+                # print the sentences
+                bi_sim = np.dot(bi_embeddings,emb_normalized_embeddings.eval().T)
+                bi_indices = np.argmax(bi_sim,axis=1)
+
+                for bi_ind in bi_indices:
+                    sentence += reverse_dictionary[bi_ind]
                 print(sentence)
+
             print('=' * 80)
         # Measure validation set perplexity.
         reset_sample_state.run()
