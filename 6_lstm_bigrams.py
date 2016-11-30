@@ -161,8 +161,8 @@ num_unrollings=10 # new number of batches to add to training data
 class BatchGenerator(object):
   def __init__(self, text_as_bigrams, batch_size, num_unrollings):
     self._text = text_as_bigrams
-    print("Bigram text: %s"%self._text[:5])
-    self._text_size = len(text)
+
+    self._text_size = len(self._text)
     self._batch_size = batch_size
     self._num_unrollings = num_unrollings
     segment = self._text_size // batch_size
@@ -171,10 +171,10 @@ class BatchGenerator(object):
 
   def _next_batch(self):
     """Generate a single batch from the current cursor position in the data."""
-    batch = np.zeros(shape=(self._batch_size,1), dtype=np.float)
+    batch = np.zeros(shape=(1,self._batch_size), dtype=np.int32)
     for b in range(self._batch_size):
         key = self._text[self._cursor[b]]
-        batch[b,1] = dictionary[key]
+        batch[0,b] = dictionary[key]
         self._cursor[b] = (self._cursor[b] + 1) % self._text_size
     return batch
 
@@ -188,19 +188,19 @@ class BatchGenerator(object):
     self._last_batch = batches[-1]
     return batches
 
-def characters(probabilities):
+def characters(labels):
   """Turn a 1-hot encoding or a probability distribution over the possible
   characters back into its (most likely) character representation."""
   # need embedding look up
-  return [reverse_dictionary[c] for c in np.argmax(probabilities, 1)]
+  return [reverse_dictionary[c] for c in labels[0,:]]
 
 def batches2string(batches):
-  """Convert a sequence of batches back into their (most likely) string
-  representation."""
-  s = [''] * batches[0].shape[0]
-  for b in batches:
-    s = [''.join(x) for x in zip(s, characters(b))]
-  return s
+    """Convert a sequence of batches back into their (most likely) string
+    representation."""
+    s = [''] * batches[0].shape[1]
+    for b in batches:
+        s = [''.join(x) for x in zip(s, characters(b))]
+    return s
 
 train_batches = BatchGenerator(train_text, batch_size, num_unrollings)
 valid_batches = BatchGenerator(valid_text, 1, 1)
@@ -410,16 +410,17 @@ with tf.Session(graph=graph) as session:
             print('Average loss at step %d: %f' % (step, average_loss))
             average_loss = 0
 
+    embeddings_ndarray = embeddings.eval()
+    print("Embeddings Shape: ",embeddings_ndarray.shape)
+
     print('Initialized')
     mean_loss = 0
     for step in range(num_steps):
         batches = train_batches.next()
-        if step==0:
-            print(batches[0])
-            print("Batches shape: %s"%batches[0].shape)
         feed_dict = dict()
+
         for i in range(num_unrollings + 1):
-            feed_dict[train_data[i]] = tf.nn.embedding_lookup(embeddings,batches[i])
+            feed_dict[train_data[i]] = embeddings_ndarray[batches[i][0],:]
         _, l, predictions, lr = session.run(
             [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
         mean_loss += l
@@ -430,9 +431,10 @@ with tf.Session(graph=graph) as session:
         print(
             'Average loss at step %d: %f learning rate: %f' % (step, mean_loss, lr))
         mean_loss = 0
-        labels = np.concatenate(list(batches)[1:])
-        print('Minibatch perplexity: %.2f' % float(
-            np.exp(logprob(predictions, labels))))
+        labels = np.concatenate(list(batches)[1:]).flatten()
+        labels_embedding = embeddings_ndarray[labels,:]
+        print('Minibatch perplexity: %.2f' % float(np.exp(logprob(predictions, labels_embedding))))
+
         if step % (summary_frequency * 10) == 0:
             # Generate some samples.
             print('=' * 80)
@@ -467,7 +469,6 @@ with tf.Session(graph=graph) as session:
         valid_logprob = 0
         for _ in range(valid_size):
             b = valid_batches.next()
-            predictions = sample_prediction.eval({sample_input: b[0]})
-            valid_logprob = valid_logprob + logprob(predictions, b[1])
-        print('Validation set perplexity: %.2f' % float(np.exp(
-            valid_logprob / valid_size)))
+            predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][0,:],:]})
+            valid_logprob = valid_logprob + logprob(predictions, embeddings_ndarray[b[1][0,:],:])
+        print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
