@@ -143,14 +143,15 @@ def generate_batch(batch_size, skip_window):
     assert batch.shape[0]==batch_size and batch.shape[1]== span-1
     return batch, labels
 
-valid_size = 1000
-valid_text = text[:valid_size]
-train_text = text[valid_size:]
+valid_size = 500
+valid_text = bigrams[:valid_size]
+train_text = bigrams[valid_size:]
 train_size = len(train_text)
 print(train_size, train_text[:64])
 print(valid_size, valid_text[:64])
 
 vocabulary_size = len(count)
+print("Vocabulary Size: %d"%vocabulary_size)
 first_letter = ord(string.ascii_lowercase[0])
 
 
@@ -160,6 +161,7 @@ num_unrollings=10 # new number of batches to add to training data
 class BatchGenerator(object):
   def __init__(self, text_as_bigrams, batch_size, num_unrollings):
     self._text = text_as_bigrams
+    print("Bigram text: %s"%self._text[:5])
     self._text_size = len(text)
     self._batch_size = batch_size
     self._num_unrollings = num_unrollings
@@ -169,10 +171,10 @@ class BatchGenerator(object):
 
   def _next_batch(self):
     """Generate a single batch from the current cursor position in the data."""
-    batch = np.zeros(shape=(self._batch_size, vocabulary_size), dtype=np.float)
+    batch = np.zeros(shape=(self._batch_size,1), dtype=np.float)
     for b in range(self._batch_size):
-        key = self._text[self._cursor[b]] + self._text[self._cursor[b]+1]
-        batch[b, dictionary[key]] = 1.0
+        key = self._text[self._cursor[b]]
+        batch[b,1] = dictionary[key]
         self._cursor[b] = (self._cursor[b] + 1) % self._text_size
     return batch
 
@@ -204,8 +206,6 @@ train_batches = BatchGenerator(train_text, batch_size, num_unrollings)
 valid_batches = BatchGenerator(valid_text, 1, 1)
 
 print(batches2string(train_batches.next()))
-print(batches2string(train_batches.next()))
-print(batches2string(valid_batches.next()))
 print(batches2string(valid_batches.next()))
 
 
@@ -241,7 +241,6 @@ def random_distribution():
 num_nodes = 64
 skip_window = 2
 embedding_size = 128
-vocabulary_size = len(count)
 num_sampled = 64
 
 graph = tf.Graph()
@@ -391,7 +390,7 @@ with graph.as_default():
         sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output, w, b))
 
 num_steps = 7001
-emb_num_steps = 15001
+emb_num_steps = 5001
 summary_frequency = 100
 
 with tf.Session(graph=graph) as session:
@@ -415,9 +414,12 @@ with tf.Session(graph=graph) as session:
     mean_loss = 0
     for step in range(num_steps):
         batches = train_batches.next()
+        if step==0:
+            print(batches[0])
+            print("Batches shape: %s"%batches[0].shape)
         feed_dict = dict()
         for i in range(num_unrollings + 1):
-            feed_dict[train_data[i]] = batches[i]
+            feed_dict[train_data[i]] = tf.nn.embedding_lookup(embeddings,batches[i])
         _, l, predictions, lr = session.run(
             [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
         mean_loss += l
