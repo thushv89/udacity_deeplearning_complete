@@ -53,7 +53,7 @@ def char2id(char):
   elif char == ' ':
     return 0
   else:
-    print('Unexpected character: %s' % char)
+    print('Unexpected character: %s' % char.encode('utf-8'))
     return 0
 
 def id2char(dictid):
@@ -268,7 +268,7 @@ with tf.Session(graph=graph) as session:
         for i in range(num_unrollings + 1):
             feed_dict[train_data[i]] = batches[i]
         _, l, predictions, lr = session.run(
-          [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
+            [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
         mean_loss += l
         if step % summary_frequency == 0:
             if step > 0:
@@ -290,13 +290,13 @@ with tf.Session(graph=graph) as session:
                         prediction = sample_prediction.eval({sample_input: feed})
                         feed = sample(prediction)
                         sentence += characters(feed)[0]
-                print(sentence)
-            print('=' * 80)
-        # Measure validation set perplexity.
-        reset_sample_state.run()
-        valid_logprob = 0
-        for _ in range(valid_size):
-            b = valid_batches.next()
-            predictions = sample_prediction.eval({sample_input: b[0]})
-            valid_logprob = valid_logprob + logprob(predictions, b[1])
-        print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
+                    print(sentence)
+                print('=' * 80)
+            # Measure validation set perplexity.
+            reset_sample_state.run()
+            valid_logprob = 0
+            for _ in range(valid_size):
+                b = valid_batches.next()
+                predictions = sample_prediction.eval({sample_input: b[0]})
+                valid_logprob = valid_logprob + logprob(predictions, b[1])
+            print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))

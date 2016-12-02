@@ -45,6 +45,8 @@ def read_data_for_embed(filename):
 
     list_data = list()
     for c_i,char in enumerate(data):
+        if c_i%2==1:
+            continue
         if c_i == len(data)-1:
             continue
         list_data.append(char+data[c_i+1])
@@ -211,8 +213,17 @@ print(batches2string(valid_batches.next()))
 
 def logprob(predictions, labels):
   """Log-probability of the true labels in a predicted batch."""
+  # Predictions is a list with exact same number of batches as the input batch list
+  # and each batch is ndarray (batch_size x emb_size)
   predictions[predictions < 1e-10] = 1e-10
   return np.sum(np.multiply(labels, -np.log(predictions))) / labels.shape[0]
+
+def prob(predictions, labels):
+  """Log-probability of the true labels in a predicted batch."""
+  # Predictions is a list with exact same number of batches as the input batch list
+  # and each batch is ndarray (batch_size x emb_size)
+  predictions[predictions < 1e-10] = 1e-10
+  return np.sum(np.multiply(labels, predictions)) / labels.shape[0]
 
 def sample_distribution(distribution):
   """Sample one element from a distribution assumed to be an array of normalized
@@ -240,11 +251,12 @@ def random_distribution():
 
 num_nodes = 64
 skip_window = 2
-embedding_size = 128
-num_sampled = 64
-
+embedding_size = 48
+num_sampled = 36
+assert num_sampled<=embedding_size
 graph = tf.Graph()
 with graph.as_default():
+
 
     # Input data.
     emb_train_dataset = tf.placeholder(tf.int32, shape=[batch_size,2*skip_window])
@@ -359,9 +371,11 @@ with graph.as_default():
                                 saved_state.assign(state)]):
         # Classifier.
         logits = tf.nn.xw_plus_b(tf.concat(0, outputs), w, b)
-        loss = tf.reduce_mean(
-            tf.nn.softmax_cross_entropy_with_logits(
-                logits, tf.concat(0, train_labels)))
+        #loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, tf.concat(0, train_labels)))
+        loss = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.nn.softmax(logits),tf.concat(0, train_labels)),1,keep_dims=True)
+                               /(tf.reduce_sum(tf.square(tf.nn.softmax(logits)),1,keep_dims=True)*
+                                 tf.reduce_sum(tf.square(tf.concat(0,train_labels)),1,keep_dims=True))
+                               )
 
     # Optimizer.
     global_step = tf.Variable(0)
@@ -389,8 +403,8 @@ with graph.as_default():
                                 saved_sample_state.assign(sample_state)]):
         sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output, w, b))
 
-num_steps = 7001
-emb_num_steps = 5001
+num_steps = 15001
+emb_num_steps = 20001
 summary_frequency = 100
 
 with tf.Session(graph=graph) as session:
@@ -407,68 +421,80 @@ with tf.Session(graph=graph) as session:
             if step > 0:
                 average_loss = average_loss / 2000
                 # The average loss is an estimate of the loss over the last 2000 batches.
-            print('Average loss at step %d: %f' % (step, average_loss))
+            print('(Embedding) Average loss at step %d: %f' % (step, average_loss))
             average_loss = 0
 
-    embeddings_ndarray = embeddings.eval()
+    embeddings_ndarray = emb_normalized_embeddings.eval()
     print("Embeddings Shape: ",embeddings_ndarray.shape)
-
+    print("Embedding Max/Min: ",np.min(np.min(embeddings_ndarray)),',',np.max(np.max(embeddings_ndarray)))
+    print("Embeddings Mean: ",np.mean(embeddings_ndarray[:5],axis=1))
     print('Initialized')
     mean_loss = 0
     for step in range(num_steps):
         batches = train_batches.next()
         feed_dict = dict()
 
+        # unrolling is the number of time steps
         for i in range(num_unrollings + 1):
-            feed_dict[train_data[i]] = embeddings_ndarray[batches[i][0],:]
+            #batches is a list of batch entitities. Each batch is a ndarray (1 x batch_size)
+            # each batch has the dictionary index corresponding to current bigram
+            feed_dict[train_data[i]] = embeddings_ndarray[batches[i][0,:],:]
+            assert embeddings_ndarray[batches[i][0,:],:].shape[0]==batch_size
+
         _, l, predictions, lr = session.run(
             [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
+        # print('Size of predictions: %d,%d'%(predictions.shape[0],predictions.shape[1]))
         mean_loss += l
         if step % summary_frequency == 0:
             if step > 0:
                 mean_loss = mean_loss / summary_frequency
-        # The mean loss is an estimate of the loss over the last few batches.
-        print(
-            'Average loss at step %d: %f learning rate: %f' % (step, mean_loss, lr))
-        mean_loss = 0
-        labels = np.concatenate(list(batches)[1:]).flatten()
-        labels_embedding = embeddings_ndarray[labels,:]
-        print('Minibatch perplexity: %.2f' % float(np.exp(logprob(predictions, labels_embedding))))
+            # The mean loss is an estimate of the loss over the last few batches.
+            print(
+                '(LSTM) Average loss at step %d: %f learning rate: %f' % (step, mean_loss, lr))
+            mean_loss = 0
+            labels = np.concatenate(list(batches)[1:]).flatten()
+            labels_embedding = embeddings_ndarray[labels,:]
+            labels_ohe = (np.arange(vocabulary_size) == labels[:,None]).astype(np.float32)
+            # predictions size is (batch_size*num_unrolling,emb_size)
+            # pred_sim is batch_size*num_unrolling, vocab_size
+            # pred_sim will act as a probability matrix for each bigram in train batches
+            pred_sim = np.dot(predictions,embeddings_ndarray.T)
+            pred_prob = np.exp(pred_sim)/np.sum(np.exp(pred_sim),axis=1).reshape(-1,1)
+            print('Minibatch perplexity: %.2f' % float(np.exp(logprob(pred_prob, labels_ohe))))
 
-        if step % (summary_frequency * 10) == 0:
-            # Generate some samples.
-            print('=' * 80)
-            # creating 5 sentences
-            for _ in range(5):
-                sentence = ''
-                # feed is a probability vector of size embedding vector
-                feed = random_distribution()
+            if step % (summary_frequency * 10) == 0:
+                # Generate some samples.
+                print('=' * 80)
+                # creating 5 sentences
+                for _ in range(5):
+                    sentence = ''
+                    # feed is a probability vector of size embedding vector
+                    feed = random_distribution()
 
-                # sentence is for pure interpretation purpose
-                # so we'll collect the embeddings and convert them to bigrams together
-                bi_embeddings = np.asarray(feed)
-                # reset LSTM sample state and output to zero
-                reset_sample_state.run()
-                # 79 elements in a sentence
-                for _ in range(79):
-                    prediction = sample_prediction.eval({sample_input: feed})
-                    feed = np.asarray(prediction)
-                    bi_embeddings = np.append(bi_embeddings,feed,axis=0)
+                    # sentence is for pure interpretation purpose
+                    # so we'll collect the embeddings and convert them to bigrams together
+                    bi_embeddings = np.asarray(feed)
+                    # reset LSTM sample state and output to zero
+                    reset_sample_state.run()
+                    # 79 elements in a sentence
+                    for _ in range(79):
+                        prediction = sample_prediction.eval({sample_input: feed})
+                        feed = np.asarray(prediction)
+                        bi_embeddings = np.append(bi_embeddings,feed,axis=0)
 
-                # print the sentences
-                bi_sim = np.dot(bi_embeddings,emb_normalized_embeddings.eval().T)
-                bi_indices = np.argmax(bi_sim,axis=1)
+                    # print the sentences
+                    bi_sim = np.dot(bi_embeddings,embeddings_ndarray.T)
+                    bi_indices = np.argmax(bi_sim,axis=1)
 
-                for bi_ind in bi_indices:
-                    sentence += reverse_dictionary[bi_ind]
-                print(sentence)
-
-            print('=' * 80)
-        # Measure validation set perplexity.
-        reset_sample_state.run()
-        valid_logprob = 0
-        for _ in range(valid_size):
-            b = valid_batches.next()
-            predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][0,:],:]})
-            valid_logprob = valid_logprob + logprob(predictions, embeddings_ndarray[b[1][0,:],:])
-        print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
+                    for bi_ind in bi_indices:
+                        sentence += reverse_dictionary[bi_ind]
+                    print(sentence)
+                print('=' * 80)
+            # Measure validation set perplexity.
+            reset_sample_state.run()
+            valid_logprob = 0
+            for _ in range(valid_size):
+                b = valid_batches.next()
+                predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][0,:],:]})
+                valid_logprob = valid_logprob + logprob(predictions, embeddings_ndarray[b[1][0,:],:])
+            print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
