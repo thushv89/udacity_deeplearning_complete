@@ -249,7 +249,7 @@ def random_distribution():
   b = np.random.uniform(0.0, 1.0, size=[1, embedding_size])
   return b/np.sum(b, 1)[:,None]
 
-num_nodes = 128
+num_nodes = [128,64]
 skip_window = 2
 embedding_size = 48
 num_sampled = 36
@@ -305,50 +305,71 @@ with graph.as_default():
     # Parameters:
     # x=>input, m=>model(output), b=>bias
     # Input gate: input, previous output, and bias.
-    ix = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
-    im = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
-    ib = tf.Variable(tf.zeros([1, num_nodes]))
+    ix1 = tf.Variable(tf.truncated_normal([embedding_size, num_nodes[0]], -0.1, 0.1))
+    im1 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[0]], -0.1, 0.1))
+    ib1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
     # Forget gate: input, previous output, and bias.
-    fx = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
-    fm = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
-    fb = tf.Variable(tf.zeros([1, num_nodes]))
+    fx1 = tf.Variable(tf.truncated_normal([embedding_size, num_nodes[0]], -0.1, 0.1))
+    fm1 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[0]], -0.1, 0.1))
+    fb1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
     # Memory cell: input, state and bias.
-    cx = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
-    cm = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
-    cb = tf.Variable(tf.zeros([1, num_nodes]))
+    cx1 = tf.Variable(tf.truncated_normal([embedding_size, num_nodes[0]], -0.1, 0.1))
+    cm1 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[0]], -0.1, 0.1))
+    cb1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
     # Output gate: input, previous output, and bias.
-    ox = tf.Variable(tf.truncated_normal([embedding_size, num_nodes], -0.1, 0.1))
-    om = tf.Variable(tf.truncated_normal([num_nodes, num_nodes], -0.1, 0.1))
-    ob = tf.Variable(tf.zeros([1, num_nodes]))
+    ox1 = tf.Variable(tf.truncated_normal([embedding_size, num_nodes[0]], -0.1, 0.1))
+    om1 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[0]], -0.1, 0.1))
+    ob1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
     # Variables saving state across unrollings.
-    saved_output = tf.Variable(tf.zeros([batch_size, num_nodes]), trainable=False)
-    saved_state = tf.Variable(tf.zeros([batch_size, num_nodes]), trainable=False)
+    saved_output_1 = tf.Variable(tf.zeros([batch_size, num_nodes[0]]), trainable=False)
+    saved_state_1 = tf.Variable(tf.zeros([batch_size, num_nodes[0]]), trainable=False)
+
+    ix2 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[1]], -0.1, 0.1))
+    im2 = tf.Variable(tf.truncated_normal([num_nodes[1], num_nodes[1]], -0.1, 0.1))
+    ib2 = tf.Variable(tf.zeros([1, num_nodes[1]]))
+    # Forget gate: input, previous output, and bias.
+    fx2 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[1]], -0.1, 0.1))
+    fm2 = tf.Variable(tf.truncated_normal([num_nodes[1], num_nodes[1]], -0.1, 0.1))
+    fb2 = tf.Variable(tf.zeros([1, num_nodes[1]]))
+    # Memory cell: input, state and bias.
+    cx2 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[1]], -0.1, 0.1))
+    cm2 = tf.Variable(tf.truncated_normal([num_nodes[1], num_nodes[1]], -0.1, 0.1))
+    cb2 = tf.Variable(tf.zeros([1, num_nodes[1]]))
+    # Output gate: input, previous output, and bias.
+    ox2 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[1]], -0.1, 0.1))
+    om2 = tf.Variable(tf.truncated_normal([num_nodes[1], num_nodes[1]], -0.1, 0.1))
+    ob2 = tf.Variable(tf.zeros([1, num_nodes[1]]))
+
+    # Variables saving state across unrollings.
+    saved_output_2 = tf.Variable(tf.zeros([batch_size, num_nodes[1]]), trainable=False)
+    saved_state_2 = tf.Variable(tf.zeros([batch_size, num_nodes[1]]), trainable=False)
+
     # Classifier weights and biases.
-    w = tf.Variable(tf.truncated_normal([num_nodes, vocabulary_size], -0.1, 0.1))
+    w = tf.Variable(tf.truncated_normal([num_nodes[1], vocabulary_size], -0.1, 0.1))
     b = tf.Variable(tf.zeros([vocabulary_size]))
 
-    # Definition of the cell computation.
-    def lstm_cell(i, o, state):
-        """Create a LSTM cell. See e.g.: http://arxiv.org/pdf/1402.1128v1.pdf
-        Note that in this formulation, we omit the various connections between the
-        previous state and the gates."""
-        input_gate = tf.sigmoid(tf.matmul(i, ix) + tf.matmul(o, im) + ib)
-        forget_gate = tf.sigmoid(tf.matmul(i, fx) + tf.matmul(o, fm) + fb)
-        update = tf.matmul(i, cx) + tf.matmul(o, cm) + cb
-        state = forget_gate * state + input_gate * tf.tanh(update)
-        output_gate = tf.sigmoid(tf.matmul(i, ox) + tf.matmul(o, om) + ob)
+    def lstm_cell_1(i,o,state):
+        ifco_x1 = tf.concat(1,[ix1,fx1,cx1,ox1])
+        ifco_o1 = tf.concat(1,[im1,fm1,cm1,om1])
+        ifco_bias1 = tf.concat(1,[ib1,fb1,cb1,ob1])
+        ifco_wx_plus_b_1 = tf.matmul(i,ifco_x1) + tf.matmul(o,ifco_o1) + ifco_bias1
+        input_gate_1 = tf.sigmoid(tf.slice(ifco_wx_plus_b_1,[0,0],[-1,num_nodes[0]]))
+        forget_gate_1 = tf.sigmoid(tf.slice(ifco_wx_plus_b_1,[0,num_nodes[0]],[-1,num_nodes[0]]))
+        update = tf.slice(ifco_wx_plus_b_1,[0,2*num_nodes[0]],[-1,num_nodes[0]])
+        state = forget_gate_1 * state + input_gate_1 * tf.tanh(update)
+        output_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b_1,[0,3*num_nodes[0]],[-1,num_nodes[0]]))
         return output_gate * tf.tanh(state), state
 
-    def lstm_cell_v2(i,o,state):
-        ifco_x = tf.concat(1,[ix,fx,cx,ox])
-        ifco_o = tf.concat(1,[im,fm,cm,om])
-        ifco_bias = tf.concat(1,[ib,fb,cb,ob])
-        ifco_wx_plus_b = tf.matmul(i,ifco_x) + tf.matmul(o,ifco_o) + ifco_bias
-        input_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b,[0,0],[-1,num_nodes]))
-        forget_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b,[0,num_nodes],[-1,num_nodes]))
-        update = tf.slice(ifco_wx_plus_b,[0,2*num_nodes],[-1,num_nodes])
-        state = forget_gate * state + input_gate * tf.tanh(update)
-        output_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b,[0,3*num_nodes],[-1,num_nodes]))
+    def lstm_cell_2(i,o,state):
+        ifco_x2 = tf.concat(1,[ix2,fx2,cx2,ox2])
+        ifco_o2 = tf.concat(1,[im2,fm2,cm2,om2])
+        ifco_bias2 = tf.concat(1,[ib2,fb2,cb2,ob2])
+        ifco_wx_plus_b_2 = tf.matmul(i,ifco_x2) + tf.matmul(o,ifco_o2) + ifco_bias2
+        input_gate_2 = tf.sigmoid(tf.slice(ifco_wx_plus_b_2,[0,0],[-1,num_nodes[1]]))
+        forget_gate_2 = tf.sigmoid(tf.slice(ifco_wx_plus_b_2,[0,num_nodes[1]],[-1,num_nodes[1]]))
+        update = tf.slice(ifco_wx_plus_b_2,[0,2*num_nodes[1]],[-1,num_nodes[1]])
+        state = forget_gate_2 * state + input_gate_2 * tf.tanh(update)
+        output_gate = tf.sigmoid(tf.slice(ifco_wx_plus_b_2,[0,3*num_nodes[1]],[-1,num_nodes[1]]))
         return output_gate * tf.tanh(state), state
 
     # Input data.
@@ -362,24 +383,27 @@ with graph.as_default():
     train_labels = train_ohe_data[1:]  # labels are inputs shifted by one time step.
 
     # Unrolled LSTM loop.
-    outputs = list()
-    output = saved_output
-    state = saved_state
+    outputs_1,outputs_2 = list(),list()
+    output_1,output_2 = saved_output_1,saved_output_2
+    state_1,state_2 = saved_state_1,saved_state_2
     for i in train_inputs:
-        output, state = lstm_cell_v2(i, output, state)
-        outputs.append(output)
+        output_1, state_1 = lstm_cell_1(i, output_1, state_1)
+        outputs_1.append(output_1)
 
     # State saving across unrollings.
-    with tf.control_dependencies([saved_output.assign(output),
-                                saved_state.assign(state)]):
-        # Classifier.
-        logits = tf.nn.xw_plus_b(tf.concat(0, outputs), w, b)
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, tf.concat(0, train_labels)))
+    with tf.control_dependencies([saved_output_1.assign(output_1),saved_state_1.assign(state_1)]):
+        for i in outputs_1:
+            output_2, state_2 = lstm_cell_2(i, output_2, state_2)
+            outputs_2.append(output_2)
+        with tf.control_dependencies([saved_output_2.assign(output_2),saved_state_2.assign(state_2)]):
+            # Classifier.
+            logits = tf.nn.xw_plus_b(tf.concat(0, outputs_2), w, b)
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, tf.concat(0, train_labels)))
 
-        #loss = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.nn.softmax(logits),tf.concat(0, train_labels)),1,keep_dims=True)
-        #                       /(tf.reduce_sum(tf.square(tf.nn.softmax(logits)),1,keep_dims=True)*
-        #                         tf.reduce_sum(tf.square(tf.concat(0,train_labels)),1,keep_dims=True))
-        #                       )
+            #loss = -tf.reduce_mean(tf.reduce_sum(tf.mul(tf.nn.softmax(logits),tf.concat(0, train_labels)),1,keep_dims=True)
+            #                       /(tf.reduce_sum(tf.square(tf.nn.softmax(logits)),1,keep_dims=True)*
+            #                         tf.reduce_sum(tf.square(tf.concat(0,train_labels)),1,keep_dims=True))
+            #                       )
 
     # Optimizer.
     global_step = tf.Variable(0)
@@ -396,16 +420,31 @@ with graph.as_default():
 
     # Sampling and validation eval: batch 1, no unrolling.
     sample_input = tf.placeholder(tf.float32, shape=[1, embedding_size])
-    saved_sample_output = tf.Variable(tf.zeros([1, num_nodes]))
-    saved_sample_state = tf.Variable(tf.zeros([1, num_nodes]))
-    reset_sample_state = tf.group(
-        saved_sample_output.assign(tf.zeros([1, num_nodes])),
-        saved_sample_state.assign(tf.zeros([1, num_nodes])))
-    sample_output, sample_state = lstm_cell_v2(
-        sample_input, saved_sample_output, saved_sample_state)
-    with tf.control_dependencies([saved_sample_output.assign(sample_output),
-                                saved_sample_state.assign(sample_state)]):
-        sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output, w, b))
+    saved_sample_output_1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
+    saved_sample_state_1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
+    saved_sample_output_2 = tf.Variable(tf.zeros([1, num_nodes[1]]))
+    saved_sample_state_2 = tf.Variable(tf.zeros([1, num_nodes[1]]))
+
+    reset_sample_state_1 = tf.group(
+        saved_sample_output_1.assign(tf.zeros([1, num_nodes[0]])),
+        saved_sample_state_1.assign(tf.zeros([1, num_nodes[0]])))
+    reset_sample_state_2 = tf.group(
+        saved_sample_output_2.assign(tf.zeros([1, num_nodes[1]])),
+        saved_sample_state_2.assign(tf.zeros([1, num_nodes[1]])))
+
+    sample_output_1, sample_state_1 = lstm_cell_1(
+        sample_input, saved_sample_output_1, saved_sample_state_1
+    )
+
+    with tf.control_dependencies([saved_sample_output_1.assign(sample_output_1),
+                                saved_sample_state_1.assign(sample_state_1)]):
+        sample_output_2, sample_state_2 = lstm_cell_2(
+                sample_output_1, saved_sample_output_2, saved_sample_state_2
+        )
+
+        with tf.control_dependencies([saved_sample_output_2.assign(sample_output_2),
+                                saved_sample_state_2.assign(sample_state_2)]):
+            sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output_2, w, b))
 
 num_steps = 15001
 emb_num_steps = 20001
@@ -483,7 +522,8 @@ with tf.Session(graph=graph) as session:
                     # so we'll collect the embeddings and convert them to bigrams together
                     bi_embeddings = np.asarray(feed)
                     # reset LSTM sample state and output to zero
-                    reset_sample_state.run()
+                    reset_sample_state_1.run()
+                    reset_sample_state_2.run()
                     # 79 elements in a sentence
                     for _ in range(79):
 
@@ -508,7 +548,9 @@ with tf.Session(graph=graph) as session:
                     print(sentence)
                 print('=' * 80)
             # Measure validation set perplexity.
-            reset_sample_state.run()
+            reset_sample_state_1.run()
+            reset_sample_state_2.run()
+
             valid_logprob = 0
             for _ in range(valid_size):
                 b = valid_batches.next()
