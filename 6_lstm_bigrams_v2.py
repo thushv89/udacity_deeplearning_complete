@@ -445,11 +445,7 @@ with tf.Session(graph=graph) as session:
             feed_dict[train_emb_data[i]] = embeddings_ndarray[batches[i][:],:]
             batch_ohe = (np.arange(vocabulary_size) == batches[i][:,None]).astype(np.float32)
             #batch_ohe[np.arange(batch_size),batches[i][:,None]] = 1.0
-            print(batches[i])
-            print()
-            print(batch_ohe)
-            print()
-            print(np.argmax(batch_ohe,axis=1))
+            
             feed_dict[train_ohe_data[i]] = batch_ohe
             assert embeddings_ndarray[batches[i][:],:].shape[0]==batch_size
             assert np.all(list(np.argmax(batch_ohe,axis=1))==list(batches[i][:,None]))
@@ -482,7 +478,7 @@ with tf.Session(graph=graph) as session:
                     sentence = ''
                     # feed is a probability vector of size embedding vector
                     feed = random_distribution()
-
+                    #feed_bigram = reverse_dictionary[np.argmax(np.dot(feed,embeddings_ndarray))]
                     # sentence is for pure interpretation purpose
                     # so we'll collect the embeddings and convert them to bigrams together
                     bi_embeddings = np.asarray(feed)
@@ -492,7 +488,7 @@ with tf.Session(graph=graph) as session:
                     for _ in range(79):
                         prediction = sample_prediction.eval({sample_input: feed})
                         pred_embedding = embeddings_ndarray[np.argmax(prediction),:]
-                        feed = np.asarray(pred_embedding)
+                        feed = np.asarray(pred_embedding).reshape(1,-1)
                         bi_embeddings = np.append(bi_embeddings,feed,axis=0)
 
                     # print the sentences
@@ -508,6 +504,7 @@ with tf.Session(graph=graph) as session:
             valid_logprob = 0
             for _ in range(valid_size):
                 b = valid_batches.next()
-                predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][0,:],:]})
-                valid_logprob = valid_logprob + logprob(predictions, embeddings_ndarray[b[1][0,:],:])
+                valid_labels_future = (np.arange(vocabulary_size) == b[1][:,None]).astype(np.float32)
+                predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][:],:]})
+                valid_logprob = valid_logprob + logprob(predictions, valid_labels_future)
             print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
