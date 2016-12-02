@@ -408,7 +408,7 @@ with graph.as_default():
         sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output, w, b))
 
 num_steps = 15001
-emb_num_steps = 5001
+emb_num_steps = 10001
 summary_frequency = 100
 
 with tf.Session(graph=graph) as session:
@@ -445,7 +445,7 @@ with tf.Session(graph=graph) as session:
             feed_dict[train_emb_data[i]] = embeddings_ndarray[batches[i][:],:]
             batch_ohe = (np.arange(vocabulary_size) == batches[i][:,None]).astype(np.float32)
             #batch_ohe[np.arange(batch_size),batches[i][:,None]] = 1.0
-            
+
             feed_dict[train_ohe_data[i]] = batch_ohe
             assert embeddings_ndarray[batches[i][:],:].shape[0]==batch_size
             assert np.all(list(np.argmax(batch_ohe,axis=1))==list(batches[i][:,None]))
