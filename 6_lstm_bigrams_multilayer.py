@@ -251,9 +251,11 @@ def random_distribution():
 
 num_nodes = [128,64]
 skip_window = 2
-embedding_size = 48
-num_sampled = 36
-assert num_sampled<=embedding_size
+embedding_size = 96
+num_sampled = 64
+use_dropout = True
+dropout_rate = 0.25
+assert num_sampled<=vocabulary_size
 
 graph = tf.Graph()
 with graph.as_default():
@@ -303,12 +305,12 @@ with graph.as_default():
     #similarity = tf.matmul(valid_embeddings, tf.transpose(normalized_embeddings))
 
     # Parameters:
-    # x=>input, m=>model(output), b=>bias
-    # Input gate: input, previous output, and bias.
+    # x=>input, m=>model(output) state, b=>bias
+    # Input gate: input, previous output (state), and bias.
     ix1 = tf.Variable(tf.truncated_normal([embedding_size, num_nodes[0]], -0.1, 0.1))
     im1 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[0]], -0.1, 0.1))
     ib1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
-    # Forget gate: input, previous output, and bias.
+    # Forget gate: input, previous output (state), and bias.
     fx1 = tf.Variable(tf.truncated_normal([embedding_size, num_nodes[0]], -0.1, 0.1))
     fm1 = tf.Variable(tf.truncated_normal([num_nodes[0], num_nodes[0]], -0.1, 0.1))
     fb1 = tf.Variable(tf.zeros([1, num_nodes[0]]))
@@ -349,6 +351,8 @@ with graph.as_default():
     b = tf.Variable(tf.zeros([vocabulary_size]))
 
     def lstm_cell_1(i,o,state):
+        if use_dropout:
+            i = tf.nn.dropout(i,keep_prob=1.0 - dropout_rate,seed=tf.set_random_seed(12345))
         ifco_x1 = tf.concat(1,[ix1,fx1,cx1,ox1])
         ifco_o1 = tf.concat(1,[im1,fm1,cm1,om1])
         ifco_bias1 = tf.concat(1,[ib1,fb1,cb1,ob1])
@@ -361,6 +365,8 @@ with graph.as_default():
         return output_gate * tf.tanh(state), state
 
     def lstm_cell_2(i,o,state):
+        if use_dropout:
+            i = tf.nn.dropout(i,keep_prob=1.0 - dropout_rate,seed=tf.set_random_seed(54321))
         ifco_x2 = tf.concat(1,[ix2,fx2,cx2,ox2])
         ifco_o2 = tf.concat(1,[im2,fm2,cm2,om2])
         ifco_bias2 = tf.concat(1,[ib2,fb2,cb2,ob2])
@@ -408,7 +414,7 @@ with graph.as_default():
     # Optimizer.
     global_step = tf.Variable(0)
     learning_rate = tf.train.exponential_decay(
-        10.0, global_step, 1000, 0.8, staircase=True)
+        12.0, global_step, 1000, 0.9, staircase=True)
     optimizer = tf.train.GradientDescentOptimizer(learning_rate)
     gradients, v = zip(*optimizer.compute_gradients(loss))
     gradients, _ = tf.clip_by_global_norm(gradients, 1.25)
@@ -446,8 +452,8 @@ with graph.as_default():
                                 saved_sample_state_2.assign(sample_state_2)]):
             sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output_2, w, b))
 
-num_steps = 15001
 emb_num_steps = 20001
+num_steps = 30001
 summary_frequency = 100
 
 with tf.Session(graph=graph) as session:
