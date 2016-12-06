@@ -346,7 +346,7 @@ num_sampled = 64
 use_dropout = False
 dropout_rate = 0.25
 beam_search = True
-beam_distance = 1
+beam_distance = 2
 
 assert num_sampled<=bigram_vocabulary_size
 
@@ -687,16 +687,19 @@ with tf.Session(graph=graph) as session:
                                     prob_i = 1
                                     while bigram_from_prediction not in dictionary:
                                         bigram_from_prediction = sentence[-1]+id2char(prob_args[prob_i])
+                                        print('bigram,:',bigram_from_prediction,': not found in the dictionary',prob_i)
                                         prob_i += 1
 
                                 bigram_index_from_prediction = dictionary[bigram_from_prediction]
                                 bigram_pred_embedding = embeddings_ndarray[bigram_index_from_prediction,:]
 
-                                # predict from the max prob label embedding
-                                next_feed = np.asarray(bigram_pred_embedding).reshape(1,-1)
-                                next_prediction = sample_prediction.eval({sample_input: next_feed})
-                                # update the beam prediction
-                                beam_prediction *= np.asarray(next_prediction)
+                                next_feed = np.asarray(prediction).reshape(1,-1)
+                                for beam_dist in range(beam_distance):
+                                    # predict from the max prob label embedding
+                                    next_prediction = sample_prediction.eval({sample_input: next_feed})
+                                    next_feed = next_prediction
+                                    # update the beam prediction
+                                    beam_prediction *= np.asarray(next_prediction)
 
                                 # find max label from beam prediction
                                 beam_max_lbl_index = np.asscalar(np.argmax(beam_prediction))
