@@ -693,11 +693,25 @@ with tf.Session(graph=graph) as session:
                                 bigram_index_from_prediction = dictionary[bigram_from_prediction]
                                 bigram_pred_embedding = embeddings_ndarray[bigram_index_from_prediction,:]
 
-                                next_feed = np.asarray(prediction).reshape(1,-1)
+                                next_feed = np.asarray(bigram_pred_embedding).reshape(1,-1)
+                                next_bigram = bigram_from_prediction
                                 for beam_dist in range(beam_distance):
                                     # predict from the max prob label embedding
+
                                     next_prediction = sample_prediction.eval({sample_input: next_feed})
-                                    next_feed = next_prediction
+
+                                    next_bigram = bigram_from_prediction[-1]+id2char(np.asscalar(np.argmax(next_prediction)))
+
+                                    if next_bigram not in dictionary:
+                                        prob_args = list(np.fliplr(np.argsort(beam_prediction)).flatten())
+                                        prob_i = 1
+                                        while next_bigram not in dictionary:
+                                            next_bigram = bigram_from_prediction[-1]+id2char(prob_args[prob_i])
+                                            prob_i += 1
+
+                                    next_bigram_index = dictionary[next_bigram]
+                                    next_bigram_embedding = embeddings_ndarray[next_bigram_index,:]
+                                    next_feed = next_bigram_embedding
                                     # update the beam prediction
                                     beam_prediction *= np.asarray(next_prediction)
 
