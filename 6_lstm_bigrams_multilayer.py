@@ -777,7 +777,7 @@ with tf.Session(graph=graph) as session:
             for _ in range(valid_size):
                 b = valid_batches.next()
                 if use_char_label:
-                    valid_labels_future = (np.arange(char_vocabulary_size) == b[1][1][:,None]).astype(np.float32)
+                    valid_labels_future = (np.arange(char_vocabulary_size) == b[0][1][:,None]).astype(np.float32)
                     predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][0][:],:]})
                 else:
                     valid_labels_future = (np.arange(bigram_vocabulary_size) == b[1][:,None]).astype(np.float32)
