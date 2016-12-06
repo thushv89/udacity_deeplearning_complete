@@ -407,7 +407,7 @@ with graph.as_default():
                                 saved_sample_state.assign(sample_state)]):
         sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output, w, b))
 
-num_steps = 30001
+num_steps = 7001
 emb_num_steps = 25001
 summary_frequency = 100
 
