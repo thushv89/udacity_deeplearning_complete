@@ -711,7 +711,7 @@ with tf.Session(graph=graph) as session:
 
                                     next_bigram_index = dictionary[next_bigram]
                                     next_bigram_embedding = embeddings_ndarray[next_bigram_index,:]
-                                    next_feed = next_bigram_embedding
+                                    next_feed = next_bigram_embedding.reshape(1,-1)
                                     # update the beam prediction
                                     beam_prediction *= np.asarray(next_prediction)
 
