@@ -213,32 +213,37 @@ class BatchGeneratorWithCharLabels(object):
     self._last_batch = batches[-1]
     return batches
 
-class BatchGenerator(object):
-  def __init__(self, text_as_bigrams, batch_size, num_unrollings):
+class BatchGeneratorWithCharLabelsWithSequence(object):
+  def __init__(self, text_as_bigrams, batch_size, num_unrollings, seq_size):
     self._text = text_as_bigrams
 
     self._text_size = len(self._text)
     self._batch_size = batch_size
     self._num_unrollings = num_unrollings
+    self.seq_size = seq_size
     segment = self._text_size // batch_size
     self._cursor = [ offset * segment for offset in range(batch_size)]
     self._last_batch = self._next_batch()
 
   def _next_batch(self):
     """Generate a single batch from the current cursor position in the data."""
-    batch = np.zeros(shape=(self._batch_size,), dtype=np.int32)
+    batch = np.zeros(shape=(self._batch_size,self.seq_size), dtype=np.int32)
+    batch_labels = np.zeros(shape=(self._batch_size,), dtype=np.int32)
+
     for b in range(self._batch_size):
-        key = self._text[self._cursor[b]]
-        batch[b] = dictionary[key]
-        self._cursor[b] = (self._cursor[b] + 1) % self._text_size
-    return batch
+        for seq_id in range(self.seq_size):
+            key = self._text[self._cursor[b]]
+            batch[b,seq_id] = dictionary[key]
+            self._cursor[b] = (self._cursor[b] + 1) % self._text_size
+        batch_labels[b] = char2id(self._text[self._cursor[b]][0])
+    return batch,batch_labels
 
   def next(self):
     """Generate the next array of batches from the data. The array consists of
     the last batch of the previous array, followed by num_unrollings new ones.
     """
     batches = [self._last_batch]
-    for step in range(self._num_unrollings):
+    for step in range(self._num_unrollings-1):
       batches.append(self._next_batch())
     self._last_batch = batches[-1]
     return batches
