@@ -38,24 +38,26 @@ text = read_data(filename)
 print('Data size %d' % len(text))
 
 
-def read_data_for_embed(filename):
+def read_data_as_bigrams(filename,overlap):
     """Extract the first file enclosed in a zip file as a list of words"""
     with zipfile.ZipFile(filename) as f:
         data = tf.compat.as_str(f.read(f.namelist()[0]))
 
     list_data = list()
     for c_i,char in enumerate(data):
-        if c_i%2==1:
+        if not overlap and c_i%2==1:
             continue
         if c_i == len(data)-1:
             continue
         list_data.append(char+data[c_i+1])
     return list_data
 
-bigrams = read_data_for_embed(filename)
-print('Data size %d' % len(bigrams))
-print('First %d bigrams: %s' %(10,bigrams[:10]))
-assert len(bigrams[0])==2
+skip_bigrams = read_data_as_bigrams(filename,False)
+overlap_bigrams = read_data_as_bigrams(filename,True)
+
+print('Data size %d' % len(skip_bigrams))
+print('First %d bigrams: %s' %(10,skip_bigrams[:10]))
+assert len(skip_bigrams[0])==2
 
 def build_dataset(bigrams):
     # UNK token is used to denote words that are not in the dictionary
@@ -93,7 +95,7 @@ def build_dataset(bigrams):
 
 # dictionary => 'ab' => 1234
 # reverse_dictionary  => 1234 => 'ab'
-data, count, dictionary, reverse_dictionary = build_dataset(bigrams)
+data, count, dictionary, reverse_dictionary = build_dataset(skip_bigrams)
 
 data_index = 0
 
@@ -145,20 +147,77 @@ def generate_batch(batch_size, skip_window):
     assert batch.shape[0]==batch_size and batch.shape[1]== span-1
     return batch, labels
 
-valid_size = 500
-valid_text = bigrams[:valid_size]
-train_text = bigrams[valid_size:]
-train_size = len(train_text)
+def char2id(char):
+  if char in string.ascii_lowercase:
+    return ord(char) - first_letter + 1
+  elif char == ' ':
+    return 0
+  else:
+    print('Unexpected character: %s' % char.encode('utf-8'))
+    return 0
+
+def id2char(dictid):
+  if dictid > 0:
+    return chr(dictid + first_letter - 1)
+  else:
+    return ' '
+
+use_char_label = True
+if use_char_label:
+    valid_size = 500
+    valid_text = overlap_bigrams[:valid_size]
+    train_text = overlap_bigrams[valid_size:]
+    train_size = len(train_text)
+else:
+    valid_size = 500
+    valid_text = skip_bigrams[:valid_size]
+    train_text = skip_bigrams[valid_size:]
+    train_size = len(train_text)
+
 print(train_size, train_text[:64])
 print(valid_size, valid_text[:64])
 
-vocabulary_size = len(count)
-print("Vocabulary Size: %d"%vocabulary_size)
+bigram_vocabulary_size = len(count)
+char_vocabulary_size = 27
+print("Vocabulary Size: %d"%bigram_vocabulary_size)
 first_letter = ord(string.ascii_lowercase[0])
 
 
 batch_size=64
 num_unrollings=10 # new number of batches to add to training data
+
+class BatchGeneratorWithCharLabels(object):
+  def __init__(self, text_as_bigrams, batch_size, num_unrollings):
+    self._text = text_as_bigrams
+
+    self._text_size = len(self._text)
+    self._batch_size = batch_size
+    self._num_unrollings = num_unrollings
+    segment = self._text_size // batch_size
+    self._cursor = [ offset * segment for offset in range(batch_size)]
+    self._last_batch = self._next_batch()
+
+  def _next_batch(self):
+    """Generate a single batch from the current cursor position in the data."""
+    batch = np.zeros(shape=(self._batch_size,), dtype=np.int32)
+    batch_labels = np.zeros(shape=(self._batch_size,), dtype=np.int32)
+
+    for b in range(self._batch_size):
+        key = self._text[self._cursor[b]]
+        batch[b] = dictionary[key]
+        batch_labels[b] = char2id(self._text[self._cursor[b]+1][1])
+        self._cursor[b] = (self._cursor[b] + 1) % self._text_size
+    return batch,batch_labels
+
+  def next(self):
+    """Generate the next array of batches from the data. The array consists of
+    the last batch of the previous array, followed by num_unrollings new ones.
+    """
+    batches = [self._last_batch]
+    for step in range(self._num_unrollings-1):
+      batches.append(self._next_batch())
+    self._last_batch = batches[-1]
+    return batches
 
 class BatchGenerator(object):
   def __init__(self, text_as_bigrams, batch_size, num_unrollings):
@@ -204,11 +263,41 @@ def batches2string(batches):
         s = [''.join(x) for x in zip(s, characters(b))]
     return s
 
-train_batches = BatchGenerator(train_text, batch_size, num_unrollings)
-valid_batches = BatchGenerator(valid_text, 1, 1)
+def batches2string_with_tuples(batches):
+    """Convert a sequence of batches back into their (most likely) string
+    representation."""
+    s_in = []
+    s_out = []
+    s_comb = []
+    for (b,l) in batches:
+        s_in.append(characters(b))
+        s_out.append([id2char(o) for o in list(l.flatten())])
+    for b_i,b_o in zip(s_in,s_out):
+        tmp_s = []
+        for b_i_j,b_o_j in zip(b_i,b_o):
+            tmp_s.append(b_i_j+b_o_j)
+        s_comb.append(tmp_s)
+    return s_in,s_out,s_comb
 
-print(batches2string(train_batches.next()))
-print(batches2string(valid_batches.next()))
+if use_char_label:
+    train_batches = BatchGeneratorWithCharLabels(train_text, batch_size, num_unrollings)
+    valid_batches = BatchGeneratorWithCharLabels(valid_text, 1, 1)
+    input_strings,label_strings,comb_strings = batches2string_with_tuples(train_batches.next())
+    valid_input_strings,valid_label_strings,valid_comb_strings = batches2string_with_tuples(valid_batches.next())
+    print('Batch Inputs')
+    print(input_strings[:1])
+    print()
+    print(label_strings[:1])
+    print()
+    print(comb_strings[:1])
+
+
+
+else:
+    train_batches = BatchGenerator(train_text, batch_size, num_unrollings)
+    valid_batches = BatchGenerator(valid_text, 1, 1)
+    print(batches2string(train_batches.next()))
+    print(batches2string(valid_batches.next()))
 
 
 def logprob(predictions, labels):
@@ -249,13 +338,17 @@ def random_distribution():
   b = np.random.uniform(0.0, 1.0, size=[1, embedding_size])
   return b/np.sum(b, 1)[:,None]
 
-num_nodes = [128,64]
+
+num_nodes = [256,128]
 skip_window = 2
-embedding_size = 96
+embedding_size = 48
 num_sampled = 64
-use_dropout = True
+use_dropout = False
 dropout_rate = 0.25
-assert num_sampled<=vocabulary_size
+beam_search = True
+beam_distance = 1
+
+assert num_sampled<=bigram_vocabulary_size
 
 graph = tf.Graph()
 with graph.as_default():
@@ -268,10 +361,10 @@ with graph.as_default():
 
     # Variables.
     # embedding, vector for each word in the vocabulary
-    embeddings = tf.Variable(tf.random_uniform([vocabulary_size, embedding_size], -1.0, 1.0))
-    emb_W = tf.Variable(tf.truncated_normal([vocabulary_size, embedding_size],
+    embeddings = tf.Variable(tf.random_uniform([bigram_vocabulary_size, embedding_size], -1.0, 1.0))
+    emb_W = tf.Variable(tf.truncated_normal([bigram_vocabulary_size, embedding_size],
                      stddev=1.0 / math.sqrt(embedding_size)))
-    emb_b = tf.Variable(tf.zeros([vocabulary_size]))
+    emb_b = tf.Variable(tf.zeros([bigram_vocabulary_size]))
 
     embeds = None
     for i in range(2*skip_window):
@@ -293,8 +386,8 @@ with graph.as_default():
     # with this loss we optimize weights, biases, embeddings
 
     emb_loss = tf.reduce_mean(tf.nn.sampled_softmax_loss(emb_W, emb_b, avg_embed,
-                           emb_train_labels, num_sampled, vocabulary_size))
-    emb_optimizer = tf.train.AdagradOptimizer(1.0).minimize(emb_loss)
+                           emb_train_labels, num_sampled, bigram_vocabulary_size))
+    emb_optimizer = tf.train.AdagradOptimizer(1.2).minimize(emb_loss)
 
     emb_norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
     emb_normalized_embeddings = embeddings / emb_norm
@@ -347,8 +440,12 @@ with graph.as_default():
     saved_state_2 = tf.Variable(tf.zeros([batch_size, num_nodes[1]]), trainable=False)
 
     # Classifier weights and biases.
-    w = tf.Variable(tf.truncated_normal([num_nodes[1], vocabulary_size], -0.1, 0.1))
-    b = tf.Variable(tf.zeros([vocabulary_size]))
+    if use_char_label:
+        w = tf.Variable(tf.truncated_normal([num_nodes[1], char_vocabulary_size], -0.1, 0.1))
+        b = tf.Variable(tf.zeros([char_vocabulary_size]))
+    else:
+        w = tf.Variable(tf.truncated_normal([num_nodes[1], bigram_vocabulary_size], -0.1, 0.1))
+        b = tf.Variable(tf.zeros([bigram_vocabulary_size]))
 
     def lstm_cell_1(i,o,state):
         if use_dropout:
@@ -381,12 +478,24 @@ with graph.as_default():
     # Input data.
     train_emb_data = list()
     train_ohe_data = list()
-    for _ in range(num_unrollings + 1):
-        train_emb_data.append(
-            tf.placeholder(tf.float32, shape=[batch_size,embedding_size]))
-        train_ohe_data.append(tf.placeholder(tf.float32, shape=[batch_size,vocabulary_size]))
-    train_inputs = train_emb_data[:num_unrollings]
-    train_labels = train_ohe_data[1:]  # labels are inputs shifted by one time step.
+
+    if use_char_label:
+        for _ in range(num_unrollings):
+            train_emb_data.append(
+                tf.placeholder(tf.float32, shape=[batch_size,embedding_size]))
+            train_ohe_data.append(tf.placeholder(tf.float32, shape=[batch_size,char_vocabulary_size]))
+    else:
+        for _ in range(num_unrollings + 1):
+            train_emb_data.append(
+                tf.placeholder(tf.float32, shape=[batch_size,embedding_size]))
+            train_ohe_data.append(tf.placeholder(tf.float32, shape=[batch_size,bigram_vocabulary_size]))
+
+    if use_char_label:
+        train_inputs = train_emb_data
+        train_labels = train_ohe_data  # labels are inputs shifted by one time step.
+    else:
+        train_inputs = train_emb_data[:num_unrollings]
+        train_labels = train_ohe_data[1:]  # labels are inputs shifted by one time step.
 
     # Unrolled LSTM loop.
     outputs_1,outputs_2 = list(),list()
@@ -452,8 +561,8 @@ with graph.as_default():
                                 saved_sample_state_2.assign(sample_state_2)]):
             sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output_2, w, b))
 
-emb_num_steps = 20001
-num_steps = 30001
+emb_num_steps = 10001
+num_steps = 20001
 summary_frequency = 100
 
 with tf.Session(graph=graph) as session:
@@ -478,22 +587,34 @@ with tf.Session(graph=graph) as session:
     print("Embedding Max/Min: ",np.min(np.min(embeddings_ndarray)),',',np.max(np.max(embeddings_ndarray)))
     print("Embeddings Mean: ",np.mean(embeddings_ndarray[:5],axis=1))
     print('Initialized')
+
     mean_loss = 0
     for step in range(num_steps):
         batches = train_batches.next()
+        if use_char_label:
+            assert len(batches[0])==len(batches[1])
+            assert len(batches)==num_unrollings
         feed_dict = dict()
 
         # unrolling is the number of time steps
-        for i in range(num_unrollings + 1):
-            #batches is a list of batch entitities. Each batch is a ndarray (1 x batch_size)
-            # each batch has the dictionary index corresponding to current bigram
-            feed_dict[train_emb_data[i]] = embeddings_ndarray[batches[i][:],:]
-            batch_ohe = (np.arange(vocabulary_size) == batches[i][:,None]).astype(np.float32)
-            #batch_ohe[np.arange(batch_size),batches[i][:,None]] = 1.0
+        if use_char_label:
+            for i in range(num_unrollings):
+                feed_dict[train_emb_data[i]] = embeddings_ndarray[batches[i][0][:],:]
+                batch_ohe = (np.arange(char_vocabulary_size) == batches[i][1][:,None]).astype(np.float32)
+                assert embeddings_ndarray[batches[i][0][:],:].shape[0]==batch_size
+                assert np.all(list(np.argmax(batch_ohe,axis=1))==list(batches[i][1][:,None]))
 
-            feed_dict[train_ohe_data[i]] = batch_ohe
-            assert embeddings_ndarray[batches[i][:],:].shape[0]==batch_size
-            assert np.all(list(np.argmax(batch_ohe,axis=1))==list(batches[i][:,None]))
+                feed_dict[train_ohe_data[i]] = batch_ohe
+        else:
+            for i in range(num_unrollings + 1):
+                #batches is a list of batch entitities. Each batch is a ndarray (1 x batch_size)
+                # each batch has the dictionary index corresponding to current bigram
+                feed_dict[train_emb_data[i]] = embeddings_ndarray[batches[i][:],:]
+                batch_ohe = (np.arange(bigram_vocabulary_size) == batches[i][:,None]).astype(np.float32)
+                assert embeddings_ndarray[batches[i][:],:].shape[0]==batch_size
+                assert np.all(list(np.argmax(batch_ohe,axis=1))==list(batches[i][:,None]))
+
+                feed_dict[train_ohe_data[i]] = batch_ohe
 
         _, l, predictions, lr = session.run(
             [optimizer, loss, train_prediction, learning_rate], feed_dict=feed_dict)
@@ -506,9 +627,19 @@ with tf.Session(graph=graph) as session:
             print(
                 '(LSTM) Average loss at step %d: %f learning rate: %f' % (step, mean_loss, lr))
             mean_loss = 0
-            labels = np.concatenate(list(batches)[1:]).flatten()
-            labels_embedding = embeddings_ndarray[labels,:]
-            labels_ohe = (np.arange(vocabulary_size) == labels[:,None]).astype(np.float32)
+            if use_char_label:
+                labels = None
+                for b,l in batches:
+                    if labels is None:
+                        labels = np.asarray(l)
+                    else:
+                        labels = np.concatenate([labels,l])
+                labels = labels.flatten()
+                assert labels.shape[0]==num_unrollings*batch_size
+                labels_ohe = (np.arange(char_vocabulary_size) == labels[:,None]).astype(np.float32)
+            else:
+                labels = np.concatenate(list(batches)[1:]).flatten()
+                labels_ohe = (np.arange(bigram_vocabulary_size) == labels[:,None]).astype(np.float32)
             # predictions size is (batch_size*num_unrolling,emb_size)
             # pred_sim is batch_size*num_unrolling, vocab_size
             # pred_sim will act as a probability matrix for each bigram in train batches
@@ -523,34 +654,119 @@ with tf.Session(graph=graph) as session:
                     sentence = ''
                     # feed is a probability vector of size embedding vector
                     feed = random_distribution()
-                    #feed_bigram = reverse_dictionary[np.argmax(np.dot(feed,embeddings_ndarray))]
-                    # sentence is for pure interpretation purpose
-                    # so we'll collect the embeddings and convert them to bigrams together
-                    bi_embeddings = np.asarray(feed)
-                    # reset LSTM sample state and output to zero
-                    reset_sample_state_1.run()
-                    reset_sample_state_2.run()
-                    # 79 elements in a sentence
-                    for _ in range(79):
 
-                        # prediction size 1 x output_size
-                        prediction = sample_prediction.eval({sample_input: feed})
-                        num_choices = np.max([np.min([10,ceil(float(20000)/float(step+1))]),3])
-                        max_lbl_indices = list(np.fliplr(np.argsort(prediction))[0,:num_choices])
-                        if num_choices>1:
-                            max_lbl_index = np.random.choice(max_lbl_indices,p=prediction[0,max_lbl_indices]/np.sum(prediction[0,max_lbl_indices]))
-                        else:
-                            max_lbl_index = max_lbl_indices[0]
-                        pred_embedding = embeddings_ndarray[max_lbl_index,:]
-                        feed = np.asarray(pred_embedding).reshape(1,-1)
-                        bi_embeddings = np.append(bi_embeddings,feed,axis=0)
+                    if use_char_label:
+                        reset_sample_state_1.run()
+                        reset_sample_state_2.run()
 
-                    # print the sentences
-                    bi_sim = np.dot(bi_embeddings,embeddings_ndarray.T)
-                    bi_indices = np.argmax(bi_sim,axis=1)
+                        sentence = reverse_dictionary[np.asscalar(np.argmax(np.dot(feed, embeddings_ndarray.T),axis=1))]
+                        #print("Beginning sentense with:|",sentence,'|')
+                        for _ in range(79):
+                            # prediction size 1 x output_size
+                            prediction = sample_prediction.eval({sample_input: feed})
+                            if not beam_search:
+                                raise NotImplementedError
+                            else:
+                                # Beam search
 
-                    for bi_ind in bi_indices:
-                        sentence += reverse_dictionary[bi_ind]
+                                # find max prob label
+                                num_choices = np.max([np.min([10,ceil(float(20000)/float(step+1))]),3])
+                                max_lbl_indices = list(np.fliplr(np.argsort(prediction))[0,:num_choices])
+                                if num_choices>1:
+                                    max_lbl_index = np.random.choice(max_lbl_indices,p=prediction[0,max_lbl_indices]/np.sum(prediction[0,max_lbl_indices]))
+                                else:
+                                    max_lbl_index = max_lbl_indices[0]
+                                #max_lbl_index = np.asscalar(np.argmax(prediction))
+                                #print('Got prediction:|',id2char(max_lbl_index),'|',max_lbl_index)
+                                beam_prediction = np.asarray(prediction)
+                                # temporary embedding lookup for max prob label
+                                #print('Bigram:|',sentence[-1],'|',id2char(max_lbl_index),'|')
+                                bigram_from_prediction = sentence[-1]+id2char(max_lbl_index)
+                                if bigram_from_prediction not in dictionary:
+                                    prob_args = list(np.fliplr(np.argsort(prediction)).flatten())
+                                    prob_i = 1
+                                    while bigram_from_prediction not in dictionary:
+                                        bigram_from_prediction = sentence[-1]+id2char(prob_args[prob_i])
+                                        prob_i += 1
+
+                                bigram_index_from_prediction = dictionary[bigram_from_prediction]
+                                bigram_pred_embedding = embeddings_ndarray[bigram_index_from_prediction,:]
+
+                                # predict from the max prob label embedding
+                                next_feed = np.asarray(bigram_pred_embedding).reshape(1,-1)
+                                next_prediction = sample_prediction.eval({sample_input: next_feed})
+                                # update the beam prediction
+                                beam_prediction *= np.asarray(next_prediction)
+
+                                # find max label from beam prediction
+                                beam_max_lbl_index = np.asscalar(np.argmax(beam_prediction))
+                                #print('Beam prediction:|',id2char(beam_max_lbl_index),'|')
+
+                                bigram_from_beam = sentence[-1]+id2char(beam_max_lbl_index)
+                                if bigram_from_beam not in dictionary:
+                                    prob_args = list(np.fliplr(np.argsort(beam_prediction)).flatten())
+                                    prob_i = 1
+                                    while bigram_from_beam not in dictionary:
+                                        bigram_from_beam = sentence[-1]+id2char(prob_args[prob_i])
+                                        beam_max_lbl_index = prob_args[prob_i]
+                                        prob_i += 1
+
+                                beam_pred_embedding = embeddings_ndarray[dictionary[bigram_from_beam],:]
+                                feed = np.asarray(beam_pred_embedding).reshape(1,-1)
+
+                                sentence += id2char(beam_max_lbl_index)
+                                #print('Sentence:|',sentence,'|',beam_max_lbl_index)
+                    else:
+                        #feed_bigram = reverse_dictionary[np.argmax(np.dot(feed,embeddings_ndarray))]
+                        # sentence is for pure interpretation purpose
+                        # so we'll collect the embeddings and convert them to bigrams together
+                        bi_embeddings = np.asarray(feed)
+                        # reset LSTM sample state and output to zero
+                        reset_sample_state_1.run()
+                        reset_sample_state_2.run()
+                        # 79 elements in a sentence
+                        for _ in range(79):
+
+                            # prediction size 1 x output_size
+                            prediction = sample_prediction.eval({sample_input: feed})
+                            if not beam_search:
+                                num_choices = np.max([np.min([10,ceil(float(20000)/float(step+1))]),3])
+                                max_lbl_indices = list(np.fliplr(np.argsort(prediction))[0,:num_choices])
+                                if num_choices>1:
+                                    max_lbl_index = np.random.choice(max_lbl_indices,p=prediction[0,max_lbl_indices]/np.sum(prediction[0,max_lbl_indices]))
+                                else:
+                                    max_lbl_index = max_lbl_indices[0]
+                                pred_embedding = embeddings_ndarray[max_lbl_index,:]
+                                feed = np.asarray(pred_embedding).reshape(1,-1)
+                                bi_embeddings = np.append(bi_embeddings,feed,axis=0)
+                            else:
+                                # Beam search
+
+                                # find max prob label
+                                max_lbl_index = np.fliplr(np.argsort(prediction))[0,0]
+                                beam_prediction = np.asarray(prediction)
+                                # temporary embedding lookup for max prob label
+                                tmp_pred_embedding = embeddings_ndarray[max_lbl_index,:]
+
+                                # predict from the max prob label embedding
+                                tmp_feed = np.asarray(tmp_pred_embedding).reshape(1,-1)
+                                tmp_prediction = sample_prediction.eval({sample_input: tmp_feed})
+                                # update the beam prediction
+                                beam_prediction *= np.asarray(tmp_prediction)
+
+                                # find max label from beam prediction
+                                max_lbl_index = np.fliplr(np.argsort(beam_prediction))[0,0]
+                                pred_embedding = embeddings_ndarray[max_lbl_index,:]
+                                feed = np.asarray(pred_embedding).reshape(1,-1)
+                                bi_embeddings = np.append(bi_embeddings,feed,axis=0)
+
+                        # print the sentences
+                        bi_sim = np.dot(bi_embeddings,embeddings_ndarray.T)
+                        bi_indices = np.argmax(bi_sim,axis=1)
+
+                        for bi_ind in bi_indices:
+                            sentence += reverse_dictionary[bi_ind]
+
                     print(sentence)
                 print('=' * 80)
             # Measure validation set perplexity.
@@ -560,7 +776,11 @@ with tf.Session(graph=graph) as session:
             valid_logprob = 0
             for _ in range(valid_size):
                 b = valid_batches.next()
-                valid_labels_future = (np.arange(vocabulary_size) == b[1][:,None]).astype(np.float32)
-                predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][:],:]})
+                if use_char_label:
+                    valid_labels_future = (np.arange(char_vocabulary_size) == b[1][1][:,None]).astype(np.float32)
+                    predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][0][:],:]})
+                else:
+                    valid_labels_future = (np.arange(bigram_vocabulary_size) == b[1][:,None]).astype(np.float32)
+                    predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][:],:]})
                 valid_logprob = valid_logprob + logprob(predictions, valid_labels_future)
             print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))

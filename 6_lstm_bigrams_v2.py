@@ -252,8 +252,8 @@ def random_distribution():
 num_nodes = 128
 skip_window = 2
 embedding_size = 48
-num_sampled = 36
-assert num_sampled<=embedding_size
+num_sampled = 64
+assert num_sampled<=vocabulary_size
 
 graph = tf.Graph()
 with graph.as_default():
@@ -407,8 +407,8 @@ with graph.as_default():
                                 saved_sample_state.assign(sample_state)]):
         sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output, w, b))
 
-num_steps = 15001
-emb_num_steps = 20001
+num_steps = 30001
+emb_num_steps = 25001
 summary_frequency = 100
 
 with tf.Session(graph=graph) as session:
