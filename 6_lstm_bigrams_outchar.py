@@ -45,7 +45,7 @@ def read_data_as_bigrams(filename,overlap):
 
     list_data = list()
     for c_i,char in enumerate(data):
-        
+
         if not overlap and c_i%2==1:
             continue
         if c_i == len(data)-1:
@@ -594,11 +594,15 @@ with tf.Session(graph=graph) as session:
 
                             keys, values = zip(*beam_prediction.items())
 
-                            max_char = id2char(np.random.choice(keys,p=np.asarray(values)/np.sum(values)))
+                            ordered_beam_args = np.fliplr(np.argsort(np.asarray(values).reshape(1,-1)))
+
+                            max_char = id2char(keys[ordered_beam_args[0,0]])
                             max_bigram = sentence[-1]+max_char
+                            prob_i = 1
                             while  max_bigram not in dictionary:
-                                max_char = id2char(np.random.choice(keys,p=np.asarray(values)/np.sum(values)))
+                                max_char = id2char(keys[ordered_beam_args[0,prob_i]])
                                 max_bigram = sentence[-1]+max_char
+                                prob_i += 1
 
                             feed = embeddings_ndarray[dictionary[max_bigram],:].reshape(1,-1)
                             sentence += max_char
