@@ -38,10 +38,19 @@ text = read_data(filename)
 print('Data size %d' % len(text))
 
 
+begin_words = []
 def read_data_as_bigrams(filename,overlap):
     """Extract the first file enclosed in a zip file as a list of words"""
     with zipfile.ZipFile(filename) as f:
         data = tf.compat.as_str(f.read(f.namelist()[0]))
+
+    with zipfile.ZipFile(filename) as f:
+        word_data = tf.compat.as_str(f.read(f.namelist()[0])).split()
+
+    for _ in range(100):
+        word_index = np.random.randint(0,len(word_data))
+        if word_data[word_index] not in begin_words:
+            begin_words.append(word_data[word_index])
 
     list_data = list()
     for c_i,char in enumerate(data):
@@ -52,6 +61,7 @@ def read_data_as_bigrams(filename,overlap):
             continue
         list_data.append(char+data[c_i+1])
     return list_data
+
 
 skip_bigrams = read_data_as_bigrams(filename,False)
 overlap_bigrams = read_data_as_bigrams(filename,True)
@@ -303,7 +313,7 @@ num_nodes = [256]
 skip_window = 2
 embedding_size = 96
 num_sampled = 64
-use_dropout = False
+use_dropout = True
 dropout_rate = 0.25
 beam_search = True
 beam_distance = 2
@@ -384,8 +394,8 @@ with graph.as_default():
     b = tf.Variable(tf.zeros([char_vocabulary_size]))
 
 
-    def lstm_cell_1(i,o,state):
-        if use_dropout:
+    def lstm_cell_1(i,o,state,training=False):
+        if use_dropout and training:
             i = tf.nn.dropout(i,keep_prob=1.0 - dropout_rate,seed=tf.set_random_seed(12345))
         ifco_x1 = tf.concat(1,[ix1,fx1,cx1,ox1])
         ifco_o1 = tf.concat(1,[im1,fm1,cm1,om1])
@@ -415,7 +425,7 @@ with graph.as_default():
     output_1 = saved_output_1
     state_1 = saved_state_1
     for i in train_inputs:
-        output_1, state_1 = lstm_cell_1(i, output_1, state_1)
+        output_1, state_1 = lstm_cell_1(i, output_1, state_1,True)
         outputs_1.append(output_1)
 
     # State saving across unrollings.
@@ -448,12 +458,14 @@ with graph.as_default():
         saved_sample_state_1.assign(tf.zeros([1, num_nodes[0]])))
 
     sample_output_1, sample_state_1 = lstm_cell_1(
-        sample_input, saved_sample_output_1, saved_sample_state_1
+        sample_input, saved_sample_output_1, saved_sample_state_1, False
     )
 
     with tf.control_dependencies([saved_sample_output_1.assign(sample_output_1),
                                 saved_sample_state_1.assign(sample_state_1)]):
         sample_prediction = tf.nn.softmax(tf.nn.xw_plus_b(sample_output_1, w, b))
+
+    sample_prediction_beam = tf.nn.softmax(tf.nn.xw_plus_b(sample_output_1, w, b))
 
 emb_num_steps = 10001
 num_steps = 7001
@@ -530,17 +542,29 @@ with tf.Session(graph=graph) as session:
 
             if step % (summary_frequency * 10) == 0:
                 # Generate some samples.
+
+
                 print('=' * 80)
                 # creating 5 sentences
                 for _ in range(5):
-                    sentence = ''
+
+                    '''sentence = ''
                     # feed is a probability vector of size embedding vector
                     feed = random_distribution()
+                    sentence = reverse_dictionary[np.asscalar(np.argmax(np.dot(feed, embeddings_ndarray.T),axis=1))]
+                    '''
 
                     reset_sample_state_1.run()
 
-                    sentence = reverse_dictionary[np.asscalar(np.argmax(np.dot(feed, embeddings_ndarray.T),axis=1))]
-
+                    random_word = np.random.choice(begin_words) + ' '
+                    for c_i,c in enumerate(random_word[:len(random_word)-1]):
+                        if c_i%2==1:
+                            continue
+                        bigram = c + random_word[c_i+1]
+                        big_embedding = embeddings_ndarray[dictionary[bigram],:].reshape(1,-1)
+                        sample_prediction.eval({sample_input: big_embedding})
+                    sentence = random_word
+                    feed = embeddings_ndarray[dictionary[bigram],:].reshape(1,-1)
                     for _ in range(79):
                         # prediction size 1 x output_size
 
@@ -564,7 +588,7 @@ with tf.Session(graph=graph) as session:
                             # Beam search
 
                             # find max prob label
-                            num_choices = np.max([np.min([5,ceil(float(20000)/float(step+1))]),2])
+                            num_choices = 10
                             max_lbl_indices = []
 
                             prob_args = list(np.fliplr(np.argsort(prediction)).flatten())
@@ -589,16 +613,25 @@ with tf.Session(graph=graph) as session:
                                 beambig_embedding = embeddings_ndarray[beambig_index,:]
 
                                 next_feed = np.asarray(beambig_embedding).reshape(1,-1)
-                                tmp_prediction = sample_prediction.eval({sample_input: next_feed})
+                                # This is important
+                                # We should not save the state and output with control_dependencies
+                                # as we are just testing out different hypothesis
+                                tmp_prediction = sample_prediction_beam.eval({sample_input: next_feed})
                                 beam_prediction[label]=beambig_prob*np.asscalar(np.max(tmp_prediction))
 
                             keys, values = zip(*beam_prediction.items())
 
                             ordered_beam_args = np.fliplr(np.argsort(np.asarray(values).reshape(1,-1)))
 
-                            max_char = id2char(keys[ordered_beam_args[0,0]])
+                            # randomly select between 0,1 or select most probable
+                            if np.random.random()<0.25:
+                                prob_i = np.random.choice(range(np.min([5,np.max([int(30/len(sentence)),2])])))
+                            else:
+                                prob_i = 0
+
+                            max_char = id2char(keys[ordered_beam_args[0,prob_i]])
                             max_bigram = sentence[-1]+max_char
-                            prob_i = 1
+                            prob_i += 1
                             while  max_bigram not in dictionary:
                                 max_char = id2char(keys[ordered_beam_args[0,prob_i]])
                                 max_bigram = sentence[-1]+max_char
