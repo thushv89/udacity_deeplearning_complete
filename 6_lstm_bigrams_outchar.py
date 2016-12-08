@@ -11,6 +11,7 @@ from six.moves.urllib.request import urlretrieve
 import math
 import collections
 from math import ceil
+import logging
 url = 'http://mattmahoney.net/dc/'
 
 def maybe_download(filename, expected_bytes):
@@ -470,7 +471,15 @@ with graph.as_default():
 emb_num_steps = 10001
 num_steps = 7001
 summary_frequency = 100
+random_generation = 'word' # bigram word
 
+logger = logging.getLogger('logger')
+logger.setLevel(logging.INFO)
+fileHandler = logging.FileHandler('logger_lstm_bigram_outchar.log', mode='w')
+fileHandler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(fileHandler)
+logger.info("Beam search: ",beam_search)
+logger.info("Initial Generation: ",random_generation)
 with tf.Session(graph=graph) as session:
     tf.initialize_all_variables().run()
 
@@ -522,7 +531,6 @@ with tf.Session(graph=graph) as session:
             # The mean loss is an estimate of the loss over the last few batches.
             print(
                 '(LSTM) Average loss at step %d: %f learning rate: %f' % (step, mean_loss, lr))
-            mean_loss = 0
 
             labels = None
             for b,l in batches:
@@ -537,8 +545,8 @@ with tf.Session(graph=graph) as session:
             # predictions size is (batch_size*num_unrolling,emb_size)
             # pred_sim is batch_size*num_unrolling, vocab_size
             # pred_sim will act as a probability matrix for each bigram in train batches
+            minibatch_perplexity = float(np.exp(logprob(predictions, labels_ohe)))
 
-            print('Minibatch perplexity: %.2f' % float(np.exp(logprob(predictions, labels_ohe))))
 
             if step % (summary_frequency * 10) == 0:
                 # Generate some samples.
@@ -548,23 +556,26 @@ with tf.Session(graph=graph) as session:
                 # creating 5 sentences
                 for _ in range(5):
 
-                    '''sentence = ''
-                    # feed is a probability vector of size embedding vector
-                    feed = random_distribution()
-                    sentence = reverse_dictionary[np.asscalar(np.argmax(np.dot(feed, embeddings_ndarray.T),axis=1))]
-                    '''
+                    if random_generation=='bigram':
+                        sentence = ''
+                        # feed is a probability vector of size embedding vector
+                        feed = random_distribution()
+                        sentence = reverse_dictionary[np.asscalar(np.argmax(np.dot(feed, embeddings_ndarray.T),axis=1))]
+                    elif random_generation == 'word':
+                        random_word = np.random.choice(begin_words) + ' '
+                        for c_i,c in enumerate(random_word[:len(random_word)-1]):
+                            if c_i%2==1:
+                                continue
+                            bigram = c + random_word[c_i+1]
+                            big_embedding = embeddings_ndarray[dictionary[bigram],:].reshape(1,-1)
+                            sample_prediction.eval({sample_input: big_embedding})
+                        sentence = random_word
+                        feed = embeddings_ndarray[dictionary[bigram],:].reshape(1,-1)
+                    else:
+                        raise AttributeError
 
                     reset_sample_state_1.run()
 
-                    random_word = np.random.choice(begin_words) + ' '
-                    for c_i,c in enumerate(random_word[:len(random_word)-1]):
-                        if c_i%2==1:
-                            continue
-                        bigram = c + random_word[c_i+1]
-                        big_embedding = embeddings_ndarray[dictionary[bigram],:].reshape(1,-1)
-                        sample_prediction.eval({sample_input: big_embedding})
-                    sentence = random_word
-                    feed = embeddings_ndarray[dictionary[bigram],:].reshape(1,-1)
                     for _ in range(79):
                         # prediction size 1 x output_size
 
@@ -653,4 +664,10 @@ with tf.Session(graph=graph) as session:
                 predictions = sample_prediction.eval({sample_input: embeddings_ndarray[b[0][0][:],:]})
 
                 valid_logprob = valid_logprob + logprob(predictions, valid_labels_future)
-            print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
+            valid_perplexity = float(np.exp(valid_logprob / valid_size))
+            print('Validation set perplexity: %.2f' %valid_perplexity)
+
+            print('Minibatch perplexity: %.2f' % minibatch_perplexity)
+            logger.info('training,%d,%.3f,%.3f,valid,%.3f',step,mean_loss,minibatch_perplexity,valid_perplexity)
+
+            mean_loss = 0
