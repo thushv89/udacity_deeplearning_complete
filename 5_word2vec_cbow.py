@@ -78,7 +78,6 @@ def generate_batch(batch_size, skip_window):
     # skip window is the amount of words we're looking at from each side of a given word
     # creates a single batch
     global data_index
-    assert skip_window%2==1
 
     span = 2 * skip_window + 1 # [ skip_window target skip_window ]
 
